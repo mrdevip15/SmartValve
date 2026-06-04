@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "author": "Gemini CLI",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-arduino-uno", "id": "uno", "top": 170, "left": 100 },
+    { "type": "wokwi-lcd1602", "id": "lcd", "top": -100, "left": 100 },
+    { "type": "wokwi-servo", "id": "servo", "top": 150, "left": 500 },
+    { "type": "wokwi-potentiometer", "id": "pot_sound", "top": 400, "left": 100, "attrs": { "label": "Sound Sensor (A0)" } },
+    { "type": "wokwi-pushbutton", "id": "btn_mode1", "top": 450, "left": 300, "attrs": { "label": "Mode 1 (D4)", "color": "green" } },
+    { "type": "wokwi-pushbutton", "id": "btn_mode2", "top": 450, "left": 400, "attrs": { "label": "Mode 2 (D5)", "color": "yellow" } },
+    { "type": "wokwi-pushbutton", "id": "btn_mode3", "top": 450, "left": 500, "attrs": { "label": "Mode 3 (D6)", "color": "red" } },
+    { "type": "wokwi-pushbutton", "id": "btn_rpm", "top": 400, "left": -100, "attrs": { "label": "IR RPM (D2)", "color": "blue" } }
+  ],
+  "connections": [
+    [ "uno:GND.1", "lcd:GND", "black", [ "v0" ] ],
+    [ "uno:5V", "lcd:VCC", "red", [ "v0" ] ],
+    [ "uno:A4", "lcd:SDA", "green", [ "v0" ] ],
+    [ "uno:A5", "lcd:SCL", "blue", [ "v0" ] ],
+
+    [ "uno:GND.1", "servo:GND", "black", [ "v0" ] ],
+    [ "uno:5V", "servo:VCC", "red", [ "v0" ] ],
+    [ "uno:9", "servo:PWM", "orange", [ "v0" ] ],
+
+    [ "uno:GND.1", "pot_sound:GND", "black", [ "v0" ] ],
+    [ "uno:5V", "pot_sound:VCC", "red", [ "v0" ] ],
+    [ "uno:A0", "pot_sound:SIG", "green", [ "v0" ] ],
+
+    [ "uno:3.3V", "btn_mode1:1.L", "red", [ "v0" ] ],
+    [ "uno:4", "btn_mode1:2.L", "green", [ "v0" ] ],
+
+    [ "uno:3.3V", "btn_mode2:1.L", "red", [ "v0" ] ],
+    [ "uno:5", "btn_mode2:2.L", "yellow", [ "v0" ] ],
+
+    [ "uno:3.3V", "btn_mode3:1.L", "red", [ "v0" ] ],
+    [ "uno:6", "btn_mode3:2.L", "orange", [ "v0" ] ],
+
+    [ "uno:GND.1", "btn_rpm:1.L", "black", [ "v0" ] ],
+    [ "uno:2", "btn_rpm:2.L", "blue", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}
