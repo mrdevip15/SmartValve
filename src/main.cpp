@@ -125,7 +125,7 @@ ButtonState buttons[3] = {
 // ============================================================
 //  ISR — Hitung pulsa RPM
 // ============================================================
-void IRAM_ATTR countPulse() { pulseCount++; }
+void countPulse() { pulseCount++; }
 
 // ============================================================
 //  Baca suara → desibel
