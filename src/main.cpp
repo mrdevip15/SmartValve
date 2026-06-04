@@ -120,9 +120,9 @@ struct ButtonState {
 };
 
 ButtonState buttons[3] = {
-    {BUTTON_MODE1_PIN, LOW, LOW, 0, false},
-    {BUTTON_MODE2_PIN, LOW, LOW, 0, false},
-    {BUTTON_MODE3_PIN, LOW, LOW, 0, false},
+    {BUTTON_MODE1_PIN, HIGH, HIGH, 0, false},
+    {BUTTON_MODE2_PIN, HIGH, HIGH, 0, false},
+    {BUTTON_MODE3_PIN, HIGH, HIGH, 0, false},
 };
 
 // ============================================================
@@ -362,9 +362,9 @@ void checkButtons() {
     bool prevStable = buttons[i].stableState;
     buttons[i].stableState = reading;
 
-    // Tepi naik terverifikasi: stable berubah LOW → HIGH
+    // Tepi turun terverifikasi: stable berubah HIGH → LOW (active LOW)
     // actionTaken mencegah aksi berulang selama tombol held
-    if (prevStable == LOW && reading == HIGH && !buttons[i].actionTaken) {
+    if (prevStable == HIGH && reading == LOW && !buttons[i].actionTaken) {
       buttons[i].actionTaken = true;
 
       SystemMode newMode =
@@ -378,8 +378,8 @@ void checkButtons() {
       Serial.println(currentMode);
     }
 
-    // Reset flag saat tombol dilepas
-    if (reading == LOW) {
+    // Reset flag saat tombol dilepas (pin kembali HIGH)
+    if (reading == HIGH) {
       buttons[i].actionTaken = false;
     }
   }
@@ -405,10 +405,10 @@ void setup() {
   delay(1500);
   lcd.clear();
 
-  // Tombol
-  pinMode(BUTTON_MODE1_PIN, INPUT);
-  pinMode(BUTTON_MODE2_PIN, INPUT);
-  pinMode(BUTTON_MODE3_PIN, INPUT);
+  // Tombol — INPUT_PULLUP: pin HIGH saat lepas, LOW saat ditekan (active LOW)
+  pinMode(BUTTON_MODE1_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_MODE2_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_MODE3_PIN, INPUT_PULLUP);
 
   // IR Sensor RPM
   pinMode(IR_SENSOR_PIN, INPUT);
