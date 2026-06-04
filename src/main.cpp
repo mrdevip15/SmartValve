@@ -45,7 +45,7 @@
 // ==================== KALIBRASI dB ====================
 // Ubah dua konstanta ini setelah melakukan kalibrasi lapangan.
 // Default awal: asumsi sensor pada ADC=512 ≈ 60 dB (tipikal KY-037 medium gain)
-#define DB_REF 60.0f // dB referensi hasil ukur sound meter
+#define DB_REF 75.0f // dB referensi hasil ukur sound meter
 #define V_REF 2.5f   // tegangan AO (volt) saat DB_REF terukur
 #define VCC 5.0f     // tegangan supply Arduino
 #define ADC_MAX 1023.0f
@@ -314,15 +314,15 @@ void updateLCD() {
 
   bool closed = (katupServo.read() >= SERVO_CLOSE - 5);
 
-  // Baris 0: Mode + RPM
+  // Baris 0: Mode + status tombol (DEBUG)
   lcd.setCursor(0, 0);
   lcd.print("M:");
   lcd.print(currentMode);
-  lcd.print(" RPM:");
-  // Padding agar tidak ada karakter sisa
-  char rpmBuf[6];
-  snprintf(rpmBuf, sizeof(rpmBuf), "%-5u", currentRPM);
-  lcd.print(rpmBuf);
+  lcd.print(" B:");
+  lcd.print(digitalRead(BUTTON_MODE1_PIN) ? "H" : "L");
+  lcd.print(digitalRead(BUTTON_MODE2_PIN) ? "H" : "L");
+  lcd.print(digitalRead(BUTTON_MODE3_PIN) ? "H" : "L");
+  lcd.print("      ");
 
   // Baris 1: P2P (kalibrasi) + dB
   lcd.setCursor(0, 1);
