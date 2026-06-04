@@ -68,9 +68,10 @@
 #define CYCLE_DURATION 60000UL // ms — periode siklus buka/tutup Mode 2 & 3
 #define DEBOUNCE_DELAY 50UL    // ms
 
-// ==================== SOUND AVERAGING ====================
-// Rata-rata N sampel untuk stabilisasi pembacaan KY-037
-#define SOUND_SAMPLES 8
+// ==================== SOUND SAMPLING ====================
+// Peak-to-peak amplitude: butuh cukup sampel untuk capture 1 siklus penuh
+// analogRead ~100µs/sample → 500 sampel ≈ 50ms (cukup untuk 20Hz)
+#define SOUND_SAMPLES 500
 
 // ==================== OBJEK ====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -132,19 +133,22 @@ void countPulse() { pulseCount++; }
 //  Menggunakan rata-rata N sampel untuk reduksi noise
 // ============================================================
 float readSoundDB() {
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < SOUND_SAMPLES; i++) {
-    sum += analogRead(SOUND_PIN);
+  uint16_t maxVal = 0, minVal = 1023;
+  for (uint16_t i = 0; i < SOUND_SAMPLES; i++) {
+    uint16_t sample = analogRead(SOUND_PIN);
+    if (sample > maxVal) maxVal = sample;
+    if (sample < minVal) minVal = sample;
   }
-  float avgADC = (float)sum / SOUND_SAMPLES;
+
+  uint16_t peakToPeak = maxVal - minVal;
 
   // Clamp agar tidak log(0)
-  if (avgADC < 1.0f)
-    avgADC = 1.0f;
+  if (peakToPeak < 1) peakToPeak = 1;
 
-  float voltage = (avgADC / ADC_MAX) * VCC;
+  float voltage = (peakToPeak / ADC_MAX) * VCC;
 
-  // SPL formula: dB = DB_REF + 20*log10(V / V_REF)
+  // SPL formula: dB = DB_REF + 20*log10(V_pp / V_REF)
+  // V_REF di sini = tegangan peak-to-peak saat kondisi DB_REF
   float db = DB_REF + 20.0f * log10f(voltage / V_REF);
 
   // Clamp ke rentang masuk akal
