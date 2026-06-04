@@ -89,6 +89,7 @@ unsigned long lastRPMUpdate = 0;
 
 // Sound
 float currentDB = 0.0f;
+uint16_t lastPeakToPeak = 0; // untuk kalibrasi LCD
 
 // Mode
 SystemMode currentMode = MODE_IDLE;
@@ -141,10 +142,7 @@ float readSoundDB() {
   }
 
   uint16_t peakToPeak = maxVal - minVal;
-
-  // DEBUG KALIBRASI — hapus setelah kalibrasi selesai
-  Serial.print(F("P2P_ADC:"));
-  Serial.println(peakToPeak);
+  lastPeakToPeak = peakToPeak;
 
   // Clamp agar tidak log(0)
   if (peakToPeak < 1) peakToPeak = 1;
@@ -321,13 +319,13 @@ void updateLCD() {
   snprintf(rpmBuf, sizeof(rpmBuf), "%-5u", currentRPM);
   lcd.print(rpmBuf);
 
-  // Baris 1: dB + status katup
+  // Baris 1: P2P (kalibrasi) + dB
   lcd.setCursor(0, 1);
   char dbBuf[6];
-  dtostrf(currentDB, 5, 1, dbBuf);
-  lcd.print(dbBuf);
-  lcd.print("dB");
-  lcd.print(closed ? " CLOSE" : " OPEN ");
+  dtostrf(currentDB, 4, 1, dbBuf);
+  char lcdLine1[17];
+  snprintf(lcdLine1, sizeof(lcdLine1), "P2P:%-4u %sdB", lastPeakToPeak, dbBuf);
+  lcd.print(lcdLine1);
 }
 
 // ============================================================
