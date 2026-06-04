@@ -72,6 +72,7 @@
 // Peak-to-peak amplitude: butuh cukup sampel untuk capture 1 siklus penuh
 // analogRead ~100µs/sample → 500 sampel ≈ 50ms (cukup untuk 20Hz)
 #define SOUND_SAMPLES 500
+#define P2P_AVG_COUNT 8  // rata-rata N kali P2P untuk stabilisasi
 
 // ==================== OBJEK ====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -134,14 +135,18 @@ void countPulse() { pulseCount++; }
 //  Menggunakan rata-rata N sampel untuk reduksi noise
 // ============================================================
 float readSoundDB() {
-  uint16_t maxVal = 0, minVal = 1023;
-  for (uint16_t i = 0; i < SOUND_SAMPLES; i++) {
-    uint16_t sample = analogRead(SOUND_PIN);
-    if (sample > maxVal) maxVal = sample;
-    if (sample < minVal) minVal = sample;
+  uint32_t p2pSum = 0;
+  for (uint8_t r = 0; r < P2P_AVG_COUNT; r++) {
+    uint16_t maxVal = 0, minVal = 1023;
+    for (uint16_t i = 0; i < SOUND_SAMPLES; i++) {
+      uint16_t sample = analogRead(SOUND_PIN);
+      if (sample > maxVal) maxVal = sample;
+      if (sample < minVal) minVal = sample;
+    }
+    p2pSum += (maxVal - minVal);
   }
 
-  uint16_t peakToPeak = maxVal - minVal;
+  uint16_t peakToPeak = (uint16_t)(p2pSum / P2P_AVG_COUNT);
   lastPeakToPeak = peakToPeak;
 
   // Clamp agar tidak log(0)
