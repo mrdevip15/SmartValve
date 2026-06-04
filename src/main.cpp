@@ -1,27 +1,44 @@
 /**
  * ============================================================
- *  SISTEM KONTROL KATUP OTOMATIS
+ *  SISTEM KONTROL KATUP OTOMATIS  (v2.1 - revisi)
  *  Board  : Arduino Uno / Nano
  *  Sensor : KY-037 (AO), IR RPM (interrupt), Servo, LCD I2C
  * ============================================================
  *
+ *  PERUBAHAN v2.1
+ *  ──────────────
+ *  1. Pembacaan suara TIDAK lagi blocking. Dulu readSoundDB()
+ *     menahan loop ~400ms (500 sampel x 8) sehingga tombol sering
+ *     telat / terlewat dan servo lambat. Sekarang sampling
+ *     streaming: 1 analogRead per loop, peak-to-peak dihitung per
+ *     window 50ms lalu di-moving-average 8 window (~400ms, sama
+ *     seperti sebelumnya). Loop kembali cepat -> tombol responsif.
+ *  2. Timeout RPM (auto ke IDLE) tidak lagi mengganggu logika suara
+ *     saat mode SUDAH di IDLE (dulu katup bisa "kedip" tiap 10 detik
+ *     saat suara menahan katup tertutup sementara RPM = 0).
+ *  3. Prosedur kalibrasi diperbaiki: V_REF = tegangan PEAK-TO-PEAK
+ *     pada level DB_REF (bukan tegangan diam ADC=512).
+ *  4. Servo hanya ditulis saat posisi berubah (kurangi jitter),
+ *     variabel mati dibuang, buffer string dB diperlebar.
+ *
  *  KALIBRASI dB
  *  ─────────────
- *  KY-037 tidak memiliki kalibrasi factory. Formula yang digunakan:
+ *  KY-037 tidak punya kalibrasi pabrik. Formula:
  *
- *    dB = DB_REF + 20 * log10(voltage / V_REF)
+ *    dB = DB_REF + 20 * log10(V_pp / V_REF)
  *
- *  DB_REF  : nilai dB yang kamu ukur dengan sound meter HP/alat
- *            saat sensor membaca tegangan V_REF
- *  V_REF   : tegangan AO pada kondisi DB_REF (dalam volt)
+ *  V_pp    : tegangan peak-to-peak hasil sampling (otomatis)
+ *  DB_REF  : nilai dB yang Anda ukur dgn sound meter saat
+ *            sensor membaca V_pp = V_REF
+ *  V_REF   : tegangan peak-to-peak (volt) pada kondisi DB_REF
  *
- *  Cara kalibrasi cepat:
- *    1. Buka app "Sound Meter" di HP
- *    2. Letakkan HP dan KY-037 berdampingan
- *    3. Buat suara konstan (misal putar tone 1kHz dari speaker)
- *    4. Catat nilai dB dari HP → isi ke DB_REF
- *    5. Catat nilai ADC dari Serial Monitor → hitung volt = (adc/1023.0)*5.0
- *       → isi ke V_REF
+ *  Cara kalibrasi:
+ *    1. Buka app "Sound Meter" di HP, letakkan berdampingan dgn KY-037.
+ *    2. Bunyikan suara konstan (mis. tone 1kHz dari speaker).
+ *    3. Catat nilai dB dari HP -> isi ke DB_REF.
+ *    4. Lihat nilai "P2P:" di LCD pada kondisi yang sama.
+ *       Hitung: V_REF = (P2P / 1023.0) * 5.0  -> isi ke V_REF.
+ *    (Atur potensiometer KY-037 agar P2P tidak mentok 0 / 1023.)
  * ============================================================
  */
 
@@ -43,20 +60,18 @@
 #define SERVO_CLOSE 90
 
 // ==================== KALIBRASI dB ====================
-// Ubah dua konstanta ini setelah melakukan kalibrasi lapangan.
-// Default awal: asumsi sensor pada ADC=512 ≈ 60 dB (tipikal KY-037 medium gain)
+// Ubah dua konstanta ini setelah kalibrasi lapangan (lihat header).
 #define DB_REF 75.0f // dB referensi hasil ukur sound meter
-#define V_REF 2.5f   // tegangan AO (volt) saat DB_REF terukur
+#define V_REF 2.5f   // tegangan PEAK-TO-PEAK (volt) saat DB_REF terukur
 #define VCC 5.0f     // tegangan supply Arduino
 #define ADC_MAX 1023.0f
 
-// Batas clamp output dB (hindari -inf / nilai aneh saat sunyi total)
+// Batas clamp output dB (hindari -inf saat sunyi total)
 #define DB_MIN 30.0f
 #define DB_MAX 120.0f
 
 // ==================== THRESHOLD ====================
-#define SOUND_THRESHOLD_DB                                                     \
-  75.0f // dB — setara ±percakapan keras / kebisingan kendaraan
+#define SOUND_THRESHOLD_DB 75.0f // dB — setara percakapan keras/kebisingan
 #define RPM_THRESHOLD 4000
 
 // ==================== TIMING ====================
@@ -66,13 +81,12 @@
 #define MODE1_CLOSE_HOLD                                                       \
   1000UL                       // ms — jeda sebelum servo buka kembali di Mode 1
 #define CYCLE_DURATION 60000UL // ms — periode siklus buka/tutup Mode 2 & 3
-#define DEBOUNCE_DELAY 50UL    // ms
+#define DEBOUNCE_DELAY 100UL   // ms — filter floating pin
 
-// ==================== SOUND SAMPLING ====================
-// Peak-to-peak amplitude: butuh cukup sampel untuk capture 1 siklus penuh
-// analogRead ~100µs/sample → 500 sampel ≈ 50ms (cukup untuk 20Hz)
-#define SOUND_SAMPLES 500
-#define P2P_AVG_COUNT 8  // rata-rata N kali P2P untuk stabilisasi
+// ==================== SOUND SAMPLING (streaming, non-blocking)
+// ====================
+#define SOUND_WINDOW_MS 50UL // panjang window deteksi peak-to-peak
+#define P2P_AVG_COUNT 8 // jumlah window untuk moving-average (8 x 50ms = 400ms)
 
 // ==================== OBJEK ====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -86,11 +100,15 @@ enum SystemMode : uint8_t { MODE_IDLE = 1, MODE_NORMAL = 2, MODE_BURU = 3 };
 volatile uint16_t pulseCount = 0;
 unsigned long lastRPMCalcTime = 0;
 uint16_t currentRPM = 0;
-unsigned long lastRPMUpdate = 0;
 
-// Sound
+// Sound (streaming sampler)
 float currentDB = 0.0f;
-uint16_t lastPeakToPeak = 0; // untuk kalibrasi LCD
+uint16_t lastPeakToPeak = 0;
+uint16_t soundMax = 0;
+uint16_t soundMin = 1023;
+unsigned long soundWindowStart = 0;
+uint16_t p2pBuf[P2P_AVG_COUNT] = {0};
+uint8_t p2pIdx = 0;
 
 // Mode
 SystemMode currentMode = MODE_IDLE;
@@ -110,6 +128,9 @@ unsigned long rpmZeroStart = 0;
 // LCD
 unsigned long lastLCDUpdate = 0;
 
+// Posisi servo (cache, agar tidak menulis berulang)
+int servoPos = SERVO_OPEN;
+
 // Debounce
 struct ButtonState {
   uint8_t pin;
@@ -120,9 +141,9 @@ struct ButtonState {
 };
 
 ButtonState buttons[3] = {
-    {BUTTON_MODE1_PIN, HIGH, HIGH, 0, false},
-    {BUTTON_MODE2_PIN, HIGH, HIGH, 0, false},
-    {BUTTON_MODE3_PIN, HIGH, HIGH, 0, false},
+    {BUTTON_MODE1_PIN, LOW, LOW, 0, false},
+    {BUTTON_MODE2_PIN, LOW, LOW, 0, false},
+    {BUTTON_MODE3_PIN, LOW, LOW, 0, false},
 };
 
 // ============================================================
@@ -131,40 +152,46 @@ ButtonState buttons[3] = {
 void countPulse() { pulseCount++; }
 
 // ============================================================
-//  Baca suara → desibel
-//  Menggunakan rata-rata N sampel untuk reduksi noise
+//  Sampling suara — NON-BLOCKING (streaming peak detector)
+//  Dipanggil tiap loop. Satu analogRead per panggilan; min/max
+//  diakumulasi sepanjang window SOUND_WINDOW_MS. Saat window penuh:
+//  hitung peak-to-peak -> moving average -> konversi ke dB.
 // ============================================================
-float readSoundDB() {
-  uint32_t p2pSum = 0;
-  for (uint8_t r = 0; r < P2P_AVG_COUNT; r++) {
-    uint16_t maxVal = 0, minVal = 1023;
-    for (uint16_t i = 0; i < SOUND_SAMPLES; i++) {
-      uint16_t sample = analogRead(SOUND_PIN);
-      if (sample > maxVal) maxVal = sample;
-      if (sample < minVal) minVal = sample;
-    }
-    p2pSum += (maxVal - minVal);
-  }
+void sampleSound() {
+  uint16_t s = analogRead(SOUND_PIN);
+  if (s > soundMax)
+    soundMax = s;
+  if (s < soundMin)
+    soundMin = s;
 
-  uint16_t peakToPeak = (uint16_t)(p2pSum / P2P_AVG_COUNT);
-  lastPeakToPeak = peakToPeak;
+  unsigned long now = millis();
+  if (now - soundWindowStart < SOUND_WINDOW_MS)
+    return;
+  soundWindowStart = now;
 
-  // Clamp agar tidak log(0)
-  if (peakToPeak < 1) peakToPeak = 1;
+  uint16_t p2p = (soundMax >= soundMin) ? (soundMax - soundMin) : 0;
+  soundMax = 0;
+  soundMin = 1023;
 
-  float voltage = (peakToPeak / ADC_MAX) * VCC;
+  // Moving average peak-to-peak (ring buffer)
+  p2pBuf[p2pIdx] = p2p;
+  p2pIdx = (p2pIdx + 1) % P2P_AVG_COUNT;
 
-  // SPL formula: dB = DB_REF + 20*log10(V_pp / V_REF)
-  // V_REF di sini = tegangan peak-to-peak saat kondisi DB_REF
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < P2P_AVG_COUNT; i++)
+    sum += p2pBuf[i];
+  uint16_t p2pAvg = (uint16_t)(sum / P2P_AVG_COUNT);
+  lastPeakToPeak = p2pAvg;
+
+  float pp = (p2pAvg < 1) ? 1.0f : (float)p2pAvg; // hindari log(0)
+  float voltage = (pp / ADC_MAX) * VCC;
   float db = DB_REF + 20.0f * log10f(voltage / V_REF);
 
-  // Clamp ke rentang masuk akal
   if (db < DB_MIN)
     db = DB_MIN;
   if (db > DB_MAX)
     db = DB_MAX;
-
-  return db;
+  currentDB = db;
 }
 
 // ============================================================
@@ -182,16 +209,20 @@ void calculateRPM() {
 
   unsigned long delta = now - lastRPMCalcTime;
   currentRPM = (pulses > 0) ? (uint16_t)((pulses * 60000UL) / delta) : 0;
-
   lastRPMCalcTime = now;
-  lastRPMUpdate = now;
 }
 
 // ============================================================
-//  Servo helper
+//  Servo helper — hanya tulis saat posisi berubah
 // ============================================================
-inline void servoOpen() { katupServo.write(SERVO_OPEN); }
-inline void servoClose() { katupServo.write(SERVO_CLOSE); }
+inline void servoWrite(int pos) {
+  if (pos != servoPos) {
+    katupServo.write(pos);
+    servoPos = pos;
+  }
+}
+inline void servoOpen() { servoWrite(SERVO_OPEN); }
+inline void servoClose() { servoWrite(SERVO_CLOSE); }
 
 // ============================================================
 //  Reset siklus
@@ -209,18 +240,22 @@ void processMode() {
   unsigned long now = millis();
 
   // --- Auto-reset ke IDLE jika RPM = 0 terlalu lama ---
-  if (currentRPM == 0) {
-    if (rpmZeroStart == 0) {
-      rpmZeroStart = now;
-    } else if (now - rpmZeroStart > RPM_TIMEOUT_MS) {
-      currentMode = MODE_IDLE;
-      mode1HoldActive = false;
+  //     Hanya berlaku saat BUKAN di IDLE, agar logika suara di
+  //     MODE_IDLE tidak terganggu (fix: katup tidak lagi "kedip").
+  if (currentMode != MODE_IDLE) {
+    if (currentRPM == 0) {
+      if (rpmZeroStart == 0) {
+        rpmZeroStart = now;
+      } else if (now - rpmZeroStart > RPM_TIMEOUT_MS) {
+        currentMode = MODE_IDLE;
+        mode1HoldActive = false;
+        rpmZeroStart = 0;
+        resetCycle();
+        return;
+      }
+    } else {
       rpmZeroStart = 0;
-      resetCycle();
-      return;
     }
-  } else {
-    rpmZeroStart = 0;
   }
 
   bool soundTrigger = (currentDB > SOUND_THRESHOLD_DB);
@@ -233,19 +268,14 @@ void processMode() {
     isCycleActive = false;
 
     if (soundTrigger) {
-      // Aktifkan close hold jika belum aktif
       if (!mode1HoldActive) {
         servoClose();
         mode1HoldActive = true;
-        mode1CloseStart = now;
       }
-      // Selama suara masih keras → perpanjang hold
-      else {
-        mode1CloseStart = now;
-      }
+      mode1CloseStart = now; // perpanjang hold selama suara masih keras
     } else {
       if (mode1HoldActive) {
-        // Tunggu hold 1 detik habis setelah suara reda
+        // Tunggu hold habis setelah suara reda
         if (now - mode1CloseStart >= MODE1_CLOSE_HOLD) {
           servoOpen();
           mode1HoldActive = false;
@@ -312,9 +342,7 @@ void updateLCD() {
     return;
   lastLCDUpdate = now;
 
-  bool closed = (katupServo.read() >= SERVO_CLOSE - 5);
-
-  // Baris 0: Mode + status tombol (DEBUG)
+  // Baris 0: Mode + status tombol (debug)
   lcd.setCursor(0, 0);
   lcd.print("M:");
   lcd.print(currentMode);
@@ -326,7 +354,7 @@ void updateLCD() {
 
   // Baris 1: P2P (kalibrasi) + dB
   lcd.setCursor(0, 1);
-  char dbBuf[6];
+  char dbBuf[7];
   dtostrf(currentDB, 4, 1, dbBuf);
   char lcdLine1[17];
   snprintf(lcdLine1, sizeof(lcdLine1), "P2P:%-4u %sdB", lastPeakToPeak, dbBuf);
@@ -334,13 +362,10 @@ void updateLCD() {
 }
 
 // ============================================================
-//  Baca tombol — debounce proper (non-blocking, tanpa while)
-//  Aksi hanya pada tepi naik TERVERIFIKASI (LOW → HIGH)
-//
-//  Fix bug double-trigger:
-//    stableState diupdate DULU, baru cek perubahan tepi.
-//    Flag actionTaken mencegah aksi dipanggil lebih dari sekali
-//    selama tombol masih ditekan.
+//  Baca tombol — debounce non-blocking, aksi pada tepi naik
+//  TERVERIFIKASI (LOW → HIGH). active HIGH: tombol ke VCC,
+//  butuh pull-down eksternal. Flag actionTaken cegah aksi berulang
+//  selama tombol ditahan.
 // ============================================================
 void checkButtons() {
   unsigned long now = millis();
@@ -352,24 +377,20 @@ void checkButtons() {
     if (reading != buttons[i].lastReading) {
       buttons[i].lastDebounce = now;
     }
-    buttons[i].lastReading = reading; // simpan di akhir setiap iterasi
+    buttons[i].lastReading = reading;
 
     // Belum melewati window debounce → skip
     if (now - buttons[i].lastDebounce <= DEBOUNCE_DELAY)
       continue;
 
-    // Sinyal sudah stabil — update stableState DULU
+    // Sinyal stabil — update stableState dulu, lalu cek tepi
     bool prevStable = buttons[i].stableState;
     buttons[i].stableState = reading;
 
-    // Tepi turun terverifikasi: stable berubah HIGH → LOW (active LOW)
-    // actionTaken mencegah aksi berulang selama tombol held
-    if (prevStable == HIGH && reading == LOW && !buttons[i].actionTaken) {
+    if (prevStable == LOW && reading == HIGH && !buttons[i].actionTaken) {
       buttons[i].actionTaken = true;
 
-      SystemMode newMode =
-          (SystemMode)(i + 1); // index 0→MODE1, 1→MODE2, 2→MODE3
-      currentMode = newMode;   // set langsung, termasuk mode yang sama
+      currentMode = (SystemMode)(i + 1); // index 0→MODE1, 1→MODE2, 2→MODE3
       mode1HoldActive = false;
       rpmZeroStart = 0;
       resetCycle();
@@ -378,8 +399,8 @@ void checkButtons() {
       Serial.println(currentMode);
     }
 
-    // Reset flag saat tombol dilepas (pin kembali HIGH)
-    if (reading == HIGH) {
+    // Reset flag saat tombol dilepas
+    if (reading == LOW) {
       buttons[i].actionTaken = false;
     }
   }
@@ -393,6 +414,7 @@ void setup() {
 
   // Servo
   katupServo.attach(SERVO_PIN);
+  servoPos = -1; // paksa write pertama kali
   servoOpen();
 
   // LCD
@@ -401,24 +423,26 @@ void setup() {
   lcd.setCursor(0, 0);
   lcd.print("Sistem Katup");
   lcd.setCursor(0, 1);
-  lcd.print("Otomatis v2.0");
+  lcd.print("Otomatis v2.1");
   delay(1500);
   lcd.clear();
 
-  // Tombol — INPUT_PULLUP: pin HIGH saat lepas, LOW saat ditekan (active LOW)
-  pinMode(BUTTON_MODE1_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_MODE2_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_MODE3_PIN, INPUT_PULLUP);
+  // Tombol — INPUT: butuh pull-down eksternal (HIGH saat ditekan ke VCC)
+  pinMode(BUTTON_MODE1_PIN, INPUT);
+  pinMode(BUTTON_MODE2_PIN, INPUT);
+  pinMode(BUTTON_MODE3_PIN, INPUT);
 
   // IR Sensor RPM
   pinMode(IR_SENSOR_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(IR_SENSOR_PIN), countPulse, FALLING);
 
   // Init timestamp
-  lastRPMCalcTime = millis();
-  lastLCDUpdate = millis();
+  unsigned long t = millis();
+  lastRPMCalcTime = t;
+  lastLCDUpdate = t;
+  soundWindowStart = t;
 
-  Serial.println(F("=== Sistem Katup Otomatis v2.0 ==="));
+  Serial.println(F("=== Sistem Katup Otomatis v2.1 ==="));
   Serial.println(F("Format: Mode | RPM | dB | Servo"));
 }
 
@@ -426,8 +450,7 @@ void setup() {
 //  LOOP UTAMA
 // ============================================================
 void loop() {
-  currentDB = readSoundDB();
-
+  sampleSound(); // non-blocking (1 sampel/loop)
   checkButtons();
   calculateRPM();
   processMode();
@@ -444,6 +467,6 @@ void loop() {
     Serial.print(F(" dB:"));
     Serial.print(currentDB, 1);
     Serial.print(F(" Servo:"));
-    Serial.println(katupServo.read());
+    Serial.println(servoPos);
   }
 }
