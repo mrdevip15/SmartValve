@@ -142,6 +142,10 @@ float readSoundDB() {
 
   uint16_t peakToPeak = maxVal - minVal;
 
+  // DEBUG KALIBRASI — hapus setelah kalibrasi selesai
+  Serial.print(F("P2P_ADC:"));
+  Serial.println(peakToPeak);
+
   // Clamp agar tidak log(0)
   if (peakToPeak < 1) peakToPeak = 1;
 
