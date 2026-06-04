@@ -315,9 +315,10 @@ void updateLCD() {
 
   // Baris 1: dB + status katup
   lcd.setCursor(0, 1);
-  char dbBuf[8];
-  snprintf(dbBuf, sizeof(dbBuf), "%5.1fdB", currentDB);
+  char dbBuf[6];
+  dtostrf(currentDB, 5, 1, dbBuf);
   lcd.print(dbBuf);
+  lcd.print("dB");
   lcd.print(closed ? " CLOSE" : " OPEN ");
 }
 
