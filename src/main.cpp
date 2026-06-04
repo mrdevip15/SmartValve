@@ -1,326 +1,437 @@
+/**
+ * ============================================================
+ *  SISTEM KONTROL KATUP OTOMATIS
+ *  Board  : Arduino Uno / Nano
+ *  Sensor : KY-037 (AO), IR RPM (interrupt), Servo, LCD I2C
+ * ============================================================
+ *
+ *  KALIBRASI dB
+ *  ─────────────
+ *  KY-037 tidak memiliki kalibrasi factory. Formula yang digunakan:
+ *
+ *    dB = DB_REF + 20 * log10(voltage / V_REF)
+ *
+ *  DB_REF  : nilai dB yang kamu ukur dengan sound meter HP/alat
+ *            saat sensor membaca tegangan V_REF
+ *  V_REF   : tegangan AO pada kondisi DB_REF (dalam volt)
+ *
+ *  Cara kalibrasi cepat:
+ *    1. Buka app "Sound Meter" di HP
+ *    2. Letakkan HP dan KY-037 berdampingan
+ *    3. Buat suara konstan (misal putar tone 1kHz dari speaker)
+ *    4. Catat nilai dB dari HP → isi ke DB_REF
+ *    5. Catat nilai ADC dari Serial Monitor → hitung volt = (adc/1023.0)*5.0
+ *       → isi ke V_REF
+ * ============================================================
+ */
+
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
 #include <Servo.h>
+#include <math.h>
 
-// ==================== DEFINISI PIN & KONSTANTA ====================
-// Servo
+// ==================== PIN ====================
 #define SERVO_PIN 9
-#define SERVO_OPEN 0
-#define SERVO_CLOSE 90
-
-// LCD I2C
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// Sensor IR RPM (Interrupt)
-#define IR_SENSOR_PIN 2
-
-// Sound Detector KY-037
+#define IR_SENSOR_PIN 2 // harus pin interrupt (Uno: 2 atau 3)
 #define SOUND_PIN A0
-
-// Tombol Mode (aktif HIGH)
 #define BUTTON_MODE1_PIN 4
 #define BUTTON_MODE2_PIN 5
 #define BUTTON_MODE3_PIN 6
 
+// ==================== SERVO ====================
+#define SERVO_OPEN 0
+#define SERVO_CLOSE 90
+
+// ==================== KALIBRASI dB ====================
+// Ubah dua konstanta ini setelah melakukan kalibrasi lapangan.
+// Default awal: asumsi sensor pada ADC=512 ≈ 60 dB (tipikal KY-037 medium gain)
+#define DB_REF 60.0f // dB referensi hasil ukur sound meter
+#define V_REF 2.5f   // tegangan AO (volt) saat DB_REF terukur
+#define VCC 5.0f     // tegangan supply Arduino
+#define ADC_MAX 1023.0f
+
+// Batas clamp output dB (hindari -inf / nilai aneh saat sunyi total)
+#define DB_MIN 30.0f
+#define DB_MAX 120.0f
+
+// ==================== THRESHOLD ====================
+#define SOUND_THRESHOLD_DB                                                     \
+  75.0f // dB — setara ±percakapan keras / kebisingan kendaraan
+#define RPM_THRESHOLD 4000
+
+// ==================== TIMING ====================
+#define RPM_CALC_INTERVAL 1000UL // ms — hitung RPM tiap 1 detik
+#define RPM_TIMEOUT_MS 10000UL   // ms — reset ke IDLE jika RPM=0 selama ini
+#define LCD_INTERVAL 500UL       // ms — refresh LCD
+#define MODE1_CLOSE_HOLD                                                       \
+  1000UL                       // ms — jeda sebelum servo buka kembali di Mode 1
+#define CYCLE_DURATION 60000UL // ms — periode siklus buka/tutup Mode 2 & 3
+#define DEBOUNCE_DELAY 50UL    // ms
+
+// ==================== SOUND AVERAGING ====================
+// Rata-rata N sampel untuk stabilisasi pembacaan KY-037
+#define SOUND_SAMPLES 8
+
+// ==================== OBJEK ====================
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 Servo katupServo;
 
-// ==================== VARIABEL GLOBAL ====================
+// ==================== ENUM MODE ====================
+enum SystemMode : uint8_t { MODE_IDLE = 1, MODE_NORMAL = 2, MODE_BURU = 3 };
+
+// ==================== STATE GLOBAL ====================
 // RPM
-volatile unsigned int pulseCount = 0;
+volatile uint16_t pulseCount = 0;
 unsigned long lastRPMCalcTime = 0;
-unsigned int currentRPM = 0;
+uint16_t currentRPM = 0;
 unsigned long lastRPMUpdate = 0;
 
-// Suara
-int soundLevel = 0;
+// Sound
+float currentDB = 0.0f;
 
-// Mode Operasi
-enum SystemMode { MODE_IDLE = 1, MODE_NORMAL = 2, MODE_BURU = 3 };
+// Mode
 SystemMode currentMode = MODE_IDLE;
 
-// Timing Non-Blocking
+// Siklus (Mode 2 & 3)
 unsigned long cycleStartTime = 0;
 bool isCycleActive = false;
 bool isClosingPhase = false;
-unsigned long cycleDuration = 60000;   // 1 menit
 
-// Threshold
-const int SOUND_THRESHOLD = 80;
-const int RPM_THRESHOLD = 4000;
+// Mode 1 close hold
+unsigned long mode1CloseStart = 0;
+bool mode1HoldActive = false;
 
-// RPM Timeout Reset
-const unsigned long RPM_TIMEOUT = 10000;
-unsigned long rpmZeroStartTime = 0;
+// RPM timeout
+unsigned long rpmZeroStart = 0;
 
-// === KHUSUS MODE 1: Jeda 1 detik setelah menutup ===
-unsigned long mode1CloseStartTime = 0;
-bool mode1CloseTimerActive = false;
-
-// Debounce Tombol
-unsigned long lastDebounceTime1 = 0, lastDebounceTime2 = 0, lastDebounceTime3 = 0;
-const unsigned long debounceDelay = 50;
-bool lastButtonState1 = LOW, lastButtonState2 = LOW, lastButtonState3 = LOW;
-
-// Update LCD
+// LCD
 unsigned long lastLCDUpdate = 0;
-const unsigned long lcdInterval = 500;
 
-// ==================== INTERRUPT RPM ====================
-void countPulse() {
-    pulseCount++;
+// Debounce
+struct ButtonState {
+  uint8_t pin;
+  bool lastReading;
+  bool stableState;
+  unsigned long lastDebounce;
+  bool actionTaken; // cegah double-trigger selama tombol held
+};
+
+ButtonState buttons[3] = {
+    {BUTTON_MODE1_PIN, LOW, LOW, 0, false},
+    {BUTTON_MODE2_PIN, LOW, LOW, 0, false},
+    {BUTTON_MODE3_PIN, LOW, LOW, 0, false},
+};
+
+// ============================================================
+//  ISR — Hitung pulsa RPM
+// ============================================================
+void IRAM_ATTR countPulse() { pulseCount++; }
+
+// ============================================================
+//  Baca suara → desibel
+//  Menggunakan rata-rata N sampel untuk reduksi noise
+// ============================================================
+float readSoundDB() {
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < SOUND_SAMPLES; i++) {
+    sum += analogRead(SOUND_PIN);
+  }
+  float avgADC = (float)sum / SOUND_SAMPLES;
+
+  // Clamp agar tidak log(0)
+  if (avgADC < 1.0f)
+    avgADC = 1.0f;
+
+  float voltage = (avgADC / ADC_MAX) * VCC;
+
+  // SPL formula: dB = DB_REF + 20*log10(V / V_REF)
+  float db = DB_REF + 20.0f * log10f(voltage / V_REF);
+
+  // Clamp ke rentang masuk akal
+  if (db < DB_MIN)
+    db = DB_MIN;
+  if (db > DB_MAX)
+    db = DB_MAX;
+
+  return db;
 }
 
-// ==================== BACA SUARA ====================
-int readSoundLevel() {
-    int raw = analogRead(SOUND_PIN);
-    return map(raw, 0, 1023, 0, 100);
-}
-
-// ==================== KALKULASI RPM ====================
+// ============================================================
+//  Hitung RPM (non-blocking, interval 1 detik)
+// ============================================================
 void calculateRPM() {
-    unsigned long now = millis();
-    unsigned long deltaTime = now - lastRPMCalcTime;
-    if (deltaTime >= 1000) {
-        noInterrupts();
-        unsigned int pulses = pulseCount;
-        pulseCount = 0;
-        interrupts();
-        if (pulses > 0) {
-            currentRPM = (pulses * 60000UL) / deltaTime;
-        } else {
-            currentRPM = 0;
-        }
-        lastRPMCalcTime = now;
-        lastRPMUpdate = now;
-    }
+  unsigned long now = millis();
+  if (now - lastRPMCalcTime < RPM_CALC_INTERVAL)
+    return;
+
+  noInterrupts();
+  uint16_t pulses = pulseCount;
+  pulseCount = 0;
+  interrupts();
+
+  unsigned long delta = now - lastRPMCalcTime;
+  currentRPM = (pulses > 0) ? (uint16_t)((pulses * 60000UL) / delta) : 0;
+
+  lastRPMCalcTime = now;
+  lastRPMUpdate = now;
 }
 
-// ==================== KONTROL SERVO ====================
-void setServoPosition(int angle) {
-    katupServo.write(angle);
-}
+// ============================================================
+//  Servo helper
+// ============================================================
+inline void servoOpen() { katupServo.write(SERVO_OPEN); }
+inline void servoClose() { katupServo.write(SERVO_CLOSE); }
 
-// ==================== RESET SIKLUS ====================
+// ============================================================
+//  Reset siklus
+// ============================================================
 void resetCycle() {
-    isCycleActive = false;
-    isClosingPhase = false;
-    setServoPosition(SERVO_OPEN);
+  isCycleActive = false;
+  isClosingPhase = false;
+  servoOpen();
 }
 
-// ==================== LOGIKA MODE ====================
+// ============================================================
+//  Proses logika mode (state machine)
+// ============================================================
 void processMode() {
-    // Cek timeout RPM = 0
-    if (currentRPM == 0) {
-        if (rpmZeroStartTime == 0) {
-            rpmZeroStartTime = millis();
-        } else if (millis() - rpmZeroStartTime > RPM_TIMEOUT) {
-            currentMode = MODE_IDLE;
-            resetCycle();
-            rpmZeroStartTime = 0;
-            mode1CloseTimerActive = false; // Reset timer mode1
-        }
+  unsigned long now = millis();
+
+  // --- Auto-reset ke IDLE jika RPM = 0 terlalu lama ---
+  if (currentRPM == 0) {
+    if (rpmZeroStart == 0) {
+      rpmZeroStart = now;
+    } else if (now - rpmZeroStart > RPM_TIMEOUT_MS) {
+      currentMode = MODE_IDLE;
+      mode1HoldActive = false;
+      rpmZeroStart = 0;
+      resetCycle();
+      return;
+    }
+  } else {
+    rpmZeroStart = 0;
+  }
+
+  bool soundTrigger = (currentDB > SOUND_THRESHOLD_DB);
+  bool rpmTrigger = (currentRPM > RPM_THRESHOLD);
+
+  switch (currentMode) {
+
+  // ── MODE 1: IDLE ──────────────────────────────────────────
+  case MODE_IDLE:
+    isCycleActive = false;
+
+    if (soundTrigger) {
+      // Aktifkan close hold jika belum aktif
+      if (!mode1HoldActive) {
+        servoClose();
+        mode1HoldActive = true;
+        mode1CloseStart = now;
+      }
+      // Selama suara masih keras → perpanjang hold
+      else {
+        mode1CloseStart = now;
+      }
     } else {
-        rpmZeroStartTime = 0;
-    }
-
-    bool soundTrigger = (soundLevel > SOUND_THRESHOLD);
-    bool rpmTrigger = (currentRPM > RPM_THRESHOLD);
-
-    // --- STATE MACHINE ---
-    switch (currentMode) {
-        case MODE_IDLE: {
-            // Mode 1: Suara > 80dB → servo menutup, lalu tunggu 1 detik sebelum boleh buka kembali
-            if (soundTrigger) {
-                // Selama timer jeda 1 detik aktif, servo tetap menutup
-                if (!mode1CloseTimerActive) {
-                    // Baru terpicu suara, mulai tutup dan aktifkan timer
-                    setServoPosition(SERVO_CLOSE);
-                    mode1CloseTimerActive = true;
-                    mode1CloseStartTime = millis();
-                }
-            } else {
-                // Suara di bawah threshold
-                if (mode1CloseTimerActive) {
-                    // Cek apakah jeda 1 detik sudah lewat
-                    if (millis() - mode1CloseStartTime >= 1000) {
-                        setServoPosition(SERVO_OPEN);
-                        mode1CloseTimerActive = false;
-                    } else {
-                        // Masih dalam masa jeda, servo tetap tutup
-                        setServoPosition(SERVO_CLOSE);
-                    }
-                } else {
-                    // Normal: suara rendah dan timer tidak aktif → buka
-                    setServoPosition(SERVO_OPEN);
-                }
-            }
-            isCycleActive = false;
-            break;
+      if (mode1HoldActive) {
+        // Tunggu hold 1 detik habis setelah suara reda
+        if (now - mode1CloseStart >= MODE1_CLOSE_HOLD) {
+          servoOpen();
+          mode1HoldActive = false;
         }
-
-        case MODE_NORMAL:
-            if (soundTrigger && rpmTrigger) {
-                if (!isCycleActive) {
-                    isCycleActive = true;
-                    isClosingPhase = true;
-                    cycleStartTime = millis();
-                    setServoPosition(SERVO_CLOSE);
-                }
-            } else {
-                if (isCycleActive) {
-                    resetCycle();
-                } else {
-                    setServoPosition(SERVO_OPEN);
-                }
-            }
-            break;
-
-        case MODE_BURU:
-            if (currentRPM < RPM_THRESHOLD) {
-                if (!isCycleActive) {
-                    isCycleActive = true;
-                    isClosingPhase = true;
-                    cycleStartTime = millis();
-                    setServoPosition(SERVO_CLOSE);
-                }
-            } else {
-                if (isCycleActive) {
-                    resetCycle();
-                } else {
-                    setServoPosition(SERVO_OPEN);
-                }
-            }
-            break;
+        // else: servo tetap close, tunggu
+      } else {
+        servoOpen();
+      }
     }
+    break;
 
-    // Proses siklus 1 menit (Mode 2 dan 3)
-    if (isCycleActive) {
-        unsigned long elapsed = millis() - cycleStartTime;
-        if (elapsed >= cycleDuration) {
-            isClosingPhase = !isClosingPhase;
-            cycleStartTime = millis();
-            if (isClosingPhase) {
-                setServoPosition(SERVO_CLOSE);
-            } else {
-                setServoPosition(SERVO_OPEN);
-            }
-        }
+  // ── MODE 2: NORMAL ────────────────────────────────────────
+  case MODE_NORMAL:
+    if (soundTrigger && rpmTrigger) {
+      if (!isCycleActive) {
+        isCycleActive = true;
+        isClosingPhase = true;
+        cycleStartTime = now;
+        servoClose();
+      }
+    } else {
+      if (isCycleActive)
+        resetCycle();
+      else
+        servoOpen();
     }
+    break;
+
+  // ── MODE 3: BURU ──────────────────────────────────────────
+  case MODE_BURU:
+    if (!rpmTrigger) { // RPM di bawah threshold → aktifkan
+      if (!isCycleActive) {
+        isCycleActive = true;
+        isClosingPhase = true;
+        cycleStartTime = now;
+        servoClose();
+      }
+    } else {
+      if (isCycleActive)
+        resetCycle();
+      else
+        servoOpen();
+    }
+    break;
+  }
+
+  // --- Proses siklus 1 menit (Mode 2 & 3) ---
+  if (isCycleActive && (now - cycleStartTime >= CYCLE_DURATION)) {
+    isClosingPhase = !isClosingPhase;
+    cycleStartTime = now;
+    if (isClosingPhase)
+      servoClose();
+    else
+      servoOpen();
+  }
 }
 
-// ==================== UPDATE LCD ====================
+// ============================================================
+//  Update LCD (non-blocking)
+// ============================================================
 void updateLCD() {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("M:");
-    lcd.print(currentMode);
-    lcd.print(" RPM:");
-    lcd.print(currentRPM);
-    lcd.setCursor(0, 1);
-    lcd.print("S:");
-    lcd.print(soundLevel);
-    lcd.print("% V:");
-    if (katupServo.read() == SERVO_CLOSE) {
-        lcd.print("CLOSE");
-    } else {
-        lcd.print("OPEN ");
-    }
+  unsigned long now = millis();
+  if (now - lastLCDUpdate < LCD_INTERVAL)
+    return;
+  lastLCDUpdate = now;
+
+  bool closed = (katupServo.read() >= SERVO_CLOSE - 5);
+
+  // Baris 0: Mode + RPM
+  lcd.setCursor(0, 0);
+  lcd.print("M:");
+  lcd.print(currentMode);
+  lcd.print(" RPM:");
+  // Padding agar tidak ada karakter sisa
+  char rpmBuf[6];
+  snprintf(rpmBuf, sizeof(rpmBuf), "%-5u", currentRPM);
+  lcd.print(rpmBuf);
+
+  // Baris 1: dB + status katup
+  lcd.setCursor(0, 1);
+  char dbBuf[8];
+  snprintf(dbBuf, sizeof(dbBuf), "%5.1fdB", currentDB);
+  lcd.print(dbBuf);
+  lcd.print(closed ? " CLOSE" : " OPEN ");
 }
 
-// ==================== PEMBACAAN TOMBOL (HIGH AKTIF) ====================
+// ============================================================
+//  Baca tombol — debounce proper (non-blocking, tanpa while)
+//  Aksi hanya pada tepi naik TERVERIFIKASI (LOW → HIGH)
+//
+//  Fix bug double-trigger:
+//    stableState diupdate DULU, baru cek perubahan tepi.
+//    Flag actionTaken mencegah aksi dipanggil lebih dari sekali
+//    selama tombol masih ditekan.
+// ============================================================
 void checkButtons() {
-    // Tombol Mode 1
-    bool reading1 = digitalRead(BUTTON_MODE1_PIN);
-    if (reading1 != lastButtonState1) {
-        lastDebounceTime1 = millis();
-    }
-    if ((millis() - lastDebounceTime1) > debounceDelay) {
-        if (reading1 == HIGH) {
-            currentMode = MODE_IDLE;
-            resetCycle();
-            mode1CloseTimerActive = false; // Reset timer
-            rpmZeroStartTime = 0;
-            while(digitalRead(BUTTON_MODE1_PIN) == HIGH); // tunggu lepas
-        }
-    }
-    lastButtonState1 = reading1;
+  unsigned long now = millis();
 
-    // Tombol Mode 2
-    bool reading2 = digitalRead(BUTTON_MODE2_PIN);
-    if (reading2 != lastButtonState2) {
-        lastDebounceTime2 = millis();
-    }
-    if ((millis() - lastDebounceTime2) > debounceDelay) {
-        if (reading2 == HIGH) {
-            currentMode = MODE_NORMAL;
-            resetCycle();
-            mode1CloseTimerActive = false;
-            rpmZeroStartTime = 0;
-            while(digitalRead(BUTTON_MODE2_PIN) == HIGH);
-        }
-    }
-    lastButtonState2 = reading2;
+  for (uint8_t i = 0; i < 3; i++) {
+    bool reading = digitalRead(buttons[i].pin);
 
-    // Tombol Mode 3
-    bool reading3 = digitalRead(BUTTON_MODE3_PIN);
-    if (reading3 != lastButtonState3) {
-        lastDebounceTime3 = millis();
+    // Reset timer debounce setiap ada perubahan sinyal mentah
+    if (reading != buttons[i].lastReading) {
+      buttons[i].lastDebounce = now;
     }
-    if ((millis() - lastDebounceTime3) > debounceDelay) {
-        if (reading3 == HIGH) {
-            currentMode = MODE_BURU;
-            resetCycle();
-            mode1CloseTimerActive = false;
-            rpmZeroStartTime = 0;
-            while(digitalRead(BUTTON_MODE3_PIN) == HIGH);
-        }
+    buttons[i].lastReading = reading; // simpan di akhir setiap iterasi
+
+    // Belum melewati window debounce → skip
+    if (now - buttons[i].lastDebounce <= DEBOUNCE_DELAY)
+      continue;
+
+    // Sinyal sudah stabil — update stableState DULU
+    bool prevStable = buttons[i].stableState;
+    buttons[i].stableState = reading;
+
+    // Tepi naik terverifikasi: stable berubah LOW → HIGH
+    // actionTaken mencegah aksi berulang selama tombol held
+    if (prevStable == LOW && reading == HIGH && !buttons[i].actionTaken) {
+      buttons[i].actionTaken = true;
+
+      SystemMode newMode =
+          (SystemMode)(i + 1); // index 0→MODE1, 1→MODE2, 2→MODE3
+      currentMode = newMode;   // set langsung, termasuk mode yang sama
+      mode1HoldActive = false;
+      rpmZeroStart = 0;
+      resetCycle();
+
+      Serial.print(F("[BTN] Mode -> "));
+      Serial.println(currentMode);
     }
-    lastButtonState3 = reading3;
+
+    // Reset flag saat tombol dilepas
+    if (reading == LOW) {
+      buttons[i].actionTaken = false;
+    }
+  }
 }
 
-// ==================== SETUP ====================
+// ============================================================
+//  SETUP
+// ============================================================
 void setup() {
-    Serial.begin(9600);
+  Serial.begin(115200);
 
-    katupServo.attach(SERVO_PIN);
-    katupServo.write(SERVO_OPEN);
+  // Servo
+  katupServo.attach(SERVO_PIN);
+  servoOpen();
 
-    lcd.init();
-    lcd.backlight();
-    lcd.setCursor(0, 0);
-    lcd.print("3-Button Mode");
-    delay(1000);
+  // LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Sistem Katup");
+  lcd.setCursor(0, 1);
+  lcd.print("Otomatis v2.0");
+  delay(1500);
+  lcd.clear();
 
-    pinMode(BUTTON_MODE1_PIN, INPUT);
-    pinMode(BUTTON_MODE2_PIN, INPUT);
-    pinMode(BUTTON_MODE3_PIN, INPUT);
+  // Tombol
+  pinMode(BUTTON_MODE1_PIN, INPUT);
+  pinMode(BUTTON_MODE2_PIN, INPUT);
+  pinMode(BUTTON_MODE3_PIN, INPUT);
 
-    pinMode(IR_SENSOR_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(IR_SENSOR_PIN), countPulse, FALLING);
+  // IR Sensor RPM
+  pinMode(IR_SENSOR_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(IR_SENSOR_PIN), countPulse, FALLING);
 
-    lastRPMCalcTime = millis();
-    lastLCDUpdate = millis();
+  // Init timestamp
+  lastRPMCalcTime = millis();
+  lastLCDUpdate = millis();
+
+  Serial.println(F("=== Sistem Katup Otomatis v2.0 ==="));
+  Serial.println(F("Format: Mode | RPM | dB | Servo"));
 }
 
-// ==================== LOOP UTAMA ====================
+// ============================================================
+//  LOOP UTAMA
+// ============================================================
 void loop() {
-    soundLevel = readSoundLevel();
-    checkButtons();
-    calculateRPM();
-    processMode();
+  currentDB = readSoundDB();
 
-    if (millis() - lastLCDUpdate >= lcdInterval) {
-        updateLCD();
-        lastLCDUpdate = millis();
+  checkButtons();
+  calculateRPM();
+  processMode();
+  updateLCD();
 
-        // Debug Serial
-        Serial.print("Mode: ");
-        Serial.print(currentMode);
-        Serial.print(" RPM: ");
-        Serial.print(currentRPM);
-        Serial.print(" Sound: ");
-        Serial.print(soundLevel);
-        Serial.print("% Servo: ");
-        Serial.println(katupServo.read());
-    }
+  // Debug Serial (interval sama dengan LCD agar tidak flood)
+  static unsigned long lastSerial = 0;
+  if (millis() - lastSerial >= LCD_INTERVAL) {
+    lastSerial = millis();
+    Serial.print(F("Mode:"));
+    Serial.print(currentMode);
+    Serial.print(F(" RPM:"));
+    Serial.print(currentRPM);
+    Serial.print(F(" dB:"));
+    Serial.print(currentDB, 1);
+    Serial.print(F(" Servo:"));
+    Serial.println(katupServo.read());
+  }
 }
