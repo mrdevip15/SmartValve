@@ -16,20 +16,26 @@
 
 #define SOUND_PIN       A0
 
-// Calibration — two-point empirical:
-//   P2P_REF (silence ~4)  → DB_REF (35 dB)
-//   P2P=633 (hard blow)   → ~114 dB  (verified on hardware)
-// DB_SCALE = (114-35) / log10(633/4) = 79 / 2.199 ≈ 36
-// Tune P2P_REF dan DB_REF kalau sensor/environment beda
-#define DB_REF          35.0f   // dB at silence (P2P = P2P_REF)
-#define P2P_REF         4.0f    // baseline P2P at silence
-#define DB_SCALE        36.0f   // empirical multiplier (bukan 20 karena sensor non-linear)
+// Calibration — INTERNAL ref (1.1V), two-point empirical:
+//   P2P_REF (silence)  → DB_REF
+//   hard blow          → ~114 dB
+//
+// Dengan INTERNAL ref, P2P values ~4.5x lebih besar dari 5V ref
+// karena resolusi ADC lebih halus (1.1V/1023 = 1.07mV per step)
+// Sinyal >1.1V akan clip di 1023 — normal, blow keras tetap terdeteksi
+//
+// !! SETELAH UPLOAD: lihat Serial, catat P2P saat diam → update P2P_REF
+//                    lalu tiup → catat P2P → hitung DB_SCALE baru
+// DB_SCALE = (114 - DB_REF) / log10(P2P_blow / P2P_REF)
+#define DB_REF          35.0f   // dB at silence
+#define P2P_REF         43.0f   // baseline P2P saat diam (measured on hardware)
+#define DB_SCALE        47.0f   // estimasi untuk 1.1V ref — UPDATE setelah cal
 #define DB_MIN          30.0f
 #define DB_MAX          120.0f
 #define SOUND_THRESHOLD_DB 75.0f
 
-#define SOUND_WINDOW_MS 50UL
-#define P2P_AVG_COUNT   8
+#define SOUND_WINDOW_MS 150UL   // naik dari 50 → tangkap lebih banyak amplitudo
+#define P2P_AVG_COUNT   16      // naik dari 8 → smoothing lebih baik
 #define LCD_INTERVAL    200UL
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -75,8 +81,9 @@ void setup() {
     Serial.println(F("=== SOUND SENSOR TEST ==="));
     Serial.println(F("RAW\tP2P\tdB"));
 
-    analogReference(DEFAULT);
+    analogReference(INTERNAL);  // 1.1V ref — resolusi 5x lebih halus
     pinMode(SOUND_PIN, INPUT);
+    delay(10);  // beri waktu ADC settle setelah ganti referensi
 
     lcd.init();
     lcd.backlight();
