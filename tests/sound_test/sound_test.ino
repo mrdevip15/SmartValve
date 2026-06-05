@@ -16,11 +16,14 @@
 
 #define SOUND_PIN       A0
 
-// Mirror main.cpp calibration constants exactly
-#define DB_REF          75.0f
-#define V_REF           2.5f
-#define VCC             5.0f
-#define ADC_MAX         1023.0f
+// Calibration — two-point empirical:
+//   P2P_REF (silence ~4)  → DB_REF (35 dB)
+//   P2P=633 (hard blow)   → ~114 dB  (verified on hardware)
+// DB_SCALE = (114-35) / log10(633/4) = 79 / 2.199 ≈ 36
+// Tune P2P_REF dan DB_REF kalau sensor/environment beda
+#define DB_REF          35.0f   // dB at silence (P2P = P2P_REF)
+#define P2P_REF         4.0f    // baseline P2P at silence
+#define DB_SCALE        36.0f   // empirical multiplier (bukan 20 karena sensor non-linear)
 #define DB_MIN          30.0f
 #define DB_MAX          120.0f
 #define SOUND_THRESHOLD_DB 75.0f
@@ -61,8 +64,7 @@ void sampleSound() {
     lastP2P = (uint16_t)(sum / P2P_AVG_COUNT);
 
     float pp = (lastP2P < 1) ? 1.0f : (float)lastP2P;
-    float voltage = (pp / ADC_MAX) * VCC;
-    float db = DB_REF + 20.0f * log10f(voltage / V_REF);
+    float db = DB_REF + DB_SCALE * log10f(pp / P2P_REF);
     if (db < DB_MIN) db = DB_MIN;
     if (db > DB_MAX) db = DB_MAX;
     currentDB = db;
