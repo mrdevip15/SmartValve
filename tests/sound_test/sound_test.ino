@@ -1,9 +1,7 @@
 /**
- * SOUND SENSOR DEBUG - MAX4466 VERSION
+ * SOUND SENSOR DEBUG - MAX4466 VERSION (CALIBRATED)
  * Pin  : A0
- * Power: Hubungkan ke 3.3V (BUKAN 5V) untuk noise lebih rendah
- * 
- * Note: MAX4466 tidak pakai baut kuning, titik tengah otomatis VCC/2
+ * Power: 3.3V recommended
  */
 
 #include <LiquidCrystal_I2C.h>
@@ -11,14 +9,13 @@
 
 #define SOUND_PIN       A0
 
-// Kalibrasi untuk MAX4466 (Default Ref 5V)
-// Silence dB: 47.4, Peak dB: 114.0
-// Dengan 3.3V power, titik tengah R adalah sekitar 338 ( (3.3/2)/5 * 1023 )
-#define DB_REF          47.4f   
-#define P2P_REF         5.0f    // P2P MAX4466 saat diam biasanya kecil
-#define DB_SCALE        40.0f   // Disesuaikan untuk sensitivitas MAX4466
+// Kalibrasi Akhir MAX4466
+#define DB_REF          42.0f   // dB saat diam (matching user meter)
+#define P2P_REF         11.0f   // baseline P2P saat diam (diperoleh dari perbandingan 62dB vs 42dB)
+#define DB_SCALE        50.0f   // Skala sensitivitas
 #define DB_MIN          30.0f
 #define DB_MAX          120.0f
+#define SOUND_THRESHOLD_DB 75.0f
 
 #define SOUND_WINDOW_MS 150UL   
 #define P2P_AVG_COUNT   16      
