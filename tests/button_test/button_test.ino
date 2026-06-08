@@ -14,7 +14,7 @@
 #define BTN3 6
 
 #define DEBOUNCE_MS   150UL
-#define CONFIRM_COUNT 15
+#define CONFIRM_COUNT 5
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
