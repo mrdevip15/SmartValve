@@ -184,9 +184,6 @@ void processMode() {
         if (now - mode1CloseStart >= MODE1_CLOSE_HOLD) {
           servoOpen();
           mode1HoldActive = false;
-          currentMode = MODE_NORMAL;
-          lastModeChange = now;
-          Serial.println(F("Auto: IDLE -> NORMAL"));
         }
       } else {
         servoOpen();
@@ -245,7 +242,7 @@ void checkButtons() {
     bool reading = digitalRead(buttons[i].pin);
 
     if (reading == HIGH) {
-      if (buttons[i].confidence < 15)
+      if (buttons[i].confidence < 30)
         buttons[i].confidence++;
     } else {
       if (buttons[i].confidence > 0)
@@ -253,7 +250,7 @@ void checkButtons() {
     }
 
     bool currentState = buttons[i].stableState;
-    if (buttons[i].confidence > 12)
+    if (buttons[i].confidence > 25)
       currentState = HIGH;
     else if (buttons[i].confidence < 3)
       currentState = LOW;

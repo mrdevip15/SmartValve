@@ -34,13 +34,12 @@ Suara keras terdeteksi
 Suara hilang
   → tunggu 1000 ms sejak suara terakhir
   → servoOpen()
-  → otomatis pindah ke MODE_NORMAL
 ```
 
 > **Catatan**: `isCycleActive` tidak digunakan di mode ini. Mekanisme open/close
 > dikendalikan murni oleh `mode1HoldActive` + timer `mode1CloseStart`.
-> Transisi ke MODE_NORMAL hanya terjadi jika suara sempat trigger — bukan saat
-> pertama kali masuk IDLE tanpa event apapun.
+>
+> **Perpindahan mode HANYA via tombol fisik.** Tidak ada auto-switch di kode.
 
 ---
 
