@@ -184,6 +184,9 @@ void processMode() {
         if (now - mode1CloseStart >= MODE1_CLOSE_HOLD) {
           servoOpen();
           mode1HoldActive = false;
+          currentMode = MODE_NORMAL;
+          lastModeChange = now;
+          Serial.println(F("Auto: IDLE -> NORMAL"));
         }
       } else {
         servoOpen();
