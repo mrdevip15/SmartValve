@@ -15,14 +15,14 @@
 // Kalibrasi Akhir MAX4466 (Data Offline)
 #define DB_REF 45.0f // dB saat diam (matching user meter)
 #define P2P_REF                                                                \
-  18.0f // baseline P2P saat diam (diperoleh dari observasi 35dB vs 45dB)
+  16.0f // baseline P2P saat diam (diperoleh dari observasi 35dB vs 45dB)
 #define DB_SCALE 55.0f // Skala sensitivitas
 #define DB_MIN 30.0f
 #define DB_MAX 120.0f
 #define SOUND_THRESHOLD_DB 75.0f
 
 #define SOUND_WINDOW_MS 150UL
-#define P2P_AVG_COUNT 4
+#define P2P_AVG_COUNT 8
 #define LCD_INTERVAL 250UL
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
