@@ -242,7 +242,7 @@ void checkButtons() {
     bool reading = digitalRead(buttons[i].pin);
 
     if (reading == HIGH) {
-      if (buttons[i].confidence < 30)
+      if (buttons[i].confidence < 15)
         buttons[i].confidence++;
     } else {
       if (buttons[i].confidence > 0)
@@ -250,7 +250,7 @@ void checkButtons() {
     }
 
     bool currentState = buttons[i].stableState;
-    if (buttons[i].confidence > 25)
+    if (buttons[i].confidence > 12)
       currentState = HIGH;
     else if (buttons[i].confidence < 3)
       currentState = LOW;
