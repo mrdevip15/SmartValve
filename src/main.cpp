@@ -29,13 +29,12 @@
 #define SERVO_OPEN 0
 #define SERVO_CLOSE 90
 
-// ==================== KALIBRASI dB ====================
-#define DB_REF 75.0f 
-#define V_REF 2.5f   
-#define VCC 5.0f     
-#define ADC_MAX 1023.0f
-#define DB_MIN 30.0f
-#define DB_MAX 120.0f
+// ==================== KALIBRASI dB (MAX4466) ====================
+#define DB_REF          45.0f   // dB saat diam (matching user meter)
+#define P2P_REF         16.0f   // baseline P2P saat diam (calibrated offline)
+#define DB_SCALE        55.0f   // Skala sensitivitas
+#define DB_MIN          30.0f
+#define DB_MAX          120.0f
 
 // ==================== THRESHOLD ====================
 #define SOUND_THRESHOLD_DB 75.0f 
@@ -47,11 +46,11 @@
 #define LCD_INTERVAL 500UL       
 #define MODE1_CLOSE_HOLD 1000UL  
 #define CYCLE_DURATION 60000UL 
-#define DEBOUNCE_DELAY 150UL   // Dinaikkan untuk meredam noise
+#define DEBOUNCE_DELAY 150UL   
 
 // ==================== SOUND SAMPLING ====================
-#define SOUND_WINDOW_MS 50UL 
-#define P2P_AVG_COUNT 8 
+#define SOUND_WINDOW_MS 150UL 
+#define P2P_AVG_COUNT 4 
 
 // ==================== OBJEK ====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -121,8 +120,7 @@ void sampleSound() {
   lastPeakToPeak = p2pAvg;
 
   float pp = (p2pAvg < 1) ? 1.0f : (float)p2pAvg;
-  float voltage = (pp / ADC_MAX) * VCC;
-  float db = DB_REF + 20.0f * log10f(voltage / V_REF);
+  float db = DB_REF + DB_SCALE * log10f(pp / P2P_REF);
 
   if (db < DB_MIN) db = DB_MIN;
   if (db > DB_MAX) db = DB_MAX;
@@ -214,30 +212,26 @@ void checkButtons() {
   for (uint8_t i = 0; i < 3; i++) {
     bool reading = digitalRead(buttons[i].pin);
 
-    // Confidence Integrator: 
-    // Jika bacaan HIGH, naikkan score. Jika LOW, turunkan score.
-    // Ini akan membuang noise "percikan" yang hanya muncul sekejap.
     if (reading == HIGH) {
-      if (buttons[i].confidence < 150) buttons[i].confidence++;
+      if (buttons[i].confidence < 15) buttons[i].confidence++;
     } else {
       if (buttons[i].confidence > 0) buttons[i].confidence--;
     }
 
-    // Tentukan status stabil berdasarkan score (Hysteresis)
     bool currentState = buttons[i].stableState;
-    if (buttons[i].confidence > 120) currentState = HIGH;
-    else if (buttons[i].confidence < 30) currentState = LOW;
+    if (buttons[i].confidence > 12) currentState = HIGH;
+    else if (buttons[i].confidence < 3) currentState = LOW;
 
     if (currentState != buttons[i].stableState) {
       buttons[i].stableState = currentState;
       
-      // Aksi saat transisi ke HIGH (Ditekan)
       if (currentState == HIGH && !buttons[i].actionTaken) {
         buttons[i].actionTaken = true;
         currentMode = (SystemMode)(i + 1);
         mode1HoldActive = false;
         rpmZeroStart = 0;
         resetCycle();
+        for (uint8_t j = 0; j < 3; j++) if (j != i) buttons[j].confidence = 0;
         Serial.print(F("Mode changed to: ")); Serial.println(currentMode);
       }
     }
@@ -254,19 +248,18 @@ void updateLCD() {
   lastLCDUpdate = now;
 
   lcd.setCursor(0, 0);
-  lcd.print("M:"); lcd.print(currentMode);
-  lcd.print(" B:");
-  // Debug tampilan B tetap menunjukkan status stabil hasil filter
-  lcd.print(buttons[0].stableState ? "H" : "L");
-  lcd.print(buttons[1].stableState ? "H" : "L");
-  lcd.print(buttons[2].stableState ? "H" : "L");
-  lcd.print("      ");
+  const char* modeNames[] = {"IDLE", "NORM", "BURU"};
+  lcd.print(modeNames[currentMode - 1]);
+  lcd.print(" RPM:");
+  lcd.print(currentRPM);
+  lcd.print("    ");
 
   lcd.setCursor(0, 1);
-  char dbBuf[7];
+  char dbBuf[6];
   dtostrf(currentDB, 4, 1, dbBuf);
   char lcdLine1[17];
-  snprintf(lcdLine1, sizeof(lcdLine1), "P2P:%-4u %sdB", lastPeakToPeak, dbBuf);
+  bool isClosed = (servoPos == SERVO_CLOSE);
+  snprintf(lcdLine1, sizeof(lcdLine1), "%sdB %s", dbBuf, isClosed ? "[CLOSE]" : "[OPEN ]");
   lcd.print(lcdLine1);
 }
 
@@ -279,13 +272,13 @@ void setup() {
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
-  lcd.print("Sistem Katup");
+  lcd.print("SmartValve v2.2");
   lcd.setCursor(0, 1);
-  lcd.print("v2.1 FixNoise");
+  lcd.print("Calib MAX4466");
   delay(1500);
   lcd.clear();
 
-  // Tetap INPUT biasa karena hardware terhubung ke 3.3V
+  analogReference(DEFAULT); // MAX4466 butuh 5V ref agar tidak saturasi
   pinMode(BUTTON_MODE1_PIN, INPUT);
   pinMode(BUTTON_MODE2_PIN, INPUT);
   pinMode(BUTTON_MODE3_PIN, INPUT);
