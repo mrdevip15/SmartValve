@@ -18,7 +18,7 @@
 #define SOUND_THRESHOLD_DB 75.0f
 
 #define SOUND_WINDOW_MS 150UL   
-#define P2P_AVG_COUNT   16      
+#define P2P_AVG_COUNT   4      
 #define LCD_INTERVAL    250UL
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
