@@ -72,6 +72,7 @@ uint16_t p2pBuf[P2P_AVG_COUNT] = {0};
 uint8_t p2pIdx = 0;
 
 SystemMode currentMode = MODE_IDLE;
+unsigned long lastModeChange = 0;
 unsigned long cycleStartTime = 0;
 bool isCycleActive = false;
 bool isClosingPhase = false;
@@ -164,21 +165,7 @@ void resetCycle() {
 
 void processMode() {
   unsigned long now = millis();
-  if (currentMode != MODE_IDLE) {
-    if (currentRPM == 0) {
-      if (rpmZeroStart == 0)
-        rpmZeroStart = now;
-      else if (now - rpmZeroStart > RPM_TIMEOUT_MS) {
-        currentMode = MODE_IDLE;
-        mode1HoldActive = false;
-        rpmZeroStart = 0;
-        resetCycle();
-        return;
-      }
-    } else {
-      rpmZeroStart = 0;
-    }
-  }
+  rpmZeroStart = 0;
 
   bool soundTrigger = (currentDB > SOUND_THRESHOLD_DB);
   bool rpmTrigger = (currentRPM > RPM_THRESHOLD);
@@ -271,8 +258,10 @@ void checkButtons() {
     if (currentState != buttons[i].stableState) {
       buttons[i].stableState = currentState;
 
-      if (currentState == HIGH && !buttons[i].actionTaken) {
+      if (currentState == HIGH && !buttons[i].actionTaken
+          && (millis() - lastModeChange) > 800UL) {
         buttons[i].actionTaken = true;
+        lastModeChange = millis();
         currentMode = (SystemMode)(i + 1);
         mode1HoldActive = false;
         rpmZeroStart = 0;
