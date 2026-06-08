@@ -1,7 +1,10 @@
 /**
- * SOUND SENSOR DEBUG - MAX4466 VERSION (CALIBRATED)
+ * SOUND SENSOR DEBUG - MAX4466 VERSION (CALIBRATED OFFLINE)
  * Pin  : A0
  * Power: 3.3V recommended
+ * 
+ * Note: Kalibrasi ini dilakukan saat tidak terhubung ke Laptop
+ *       untuk menghindari noise grounding dari charger.
  */
 
 #include <LiquidCrystal_I2C.h>
@@ -9,10 +12,10 @@
 
 #define SOUND_PIN       A0
 
-// Kalibrasi Akhir MAX4466
-#define DB_REF          42.0f   // dB saat diam (matching user meter)
-#define P2P_REF         11.0f   // baseline P2P saat diam (diperoleh dari perbandingan 62dB vs 42dB)
-#define DB_SCALE        50.0f   // Skala sensitivitas
+// Kalibrasi Akhir MAX4466 (Data Offline)
+#define DB_REF          45.0f   // dB saat diam (matching user meter)
+#define P2P_REF         24.0f   // baseline P2P saat diam (diperoleh dari Mi:806 Ma:830)
+#define DB_SCALE        55.0f   // Skala sensitivitas (adj: (114-45)/log10(290/24) ≈ 64, kita pakai 55-60)
 #define DB_MIN          30.0f
 #define DB_MAX          120.0f
 #define SOUND_THRESHOLD_DB 75.0f
@@ -57,7 +60,7 @@ void sampleSound() {
     lastP2P = (uint16_t)(sum / P2P_AVG_COUNT);
 
     float pp = (lastP2P < 1) ? 1.0f : (float)lastP2P;
-    // Rumus dB sederhana untuk testing
+    // Rumus dB logaritmik
     float db = DB_REF + DB_SCALE * log10f(pp / P2P_REF);
     if (db < DB_MIN) db = DB_MIN;
     if (db > DB_MAX) db = DB_MAX;
@@ -66,14 +69,13 @@ void sampleSound() {
 
 void setup() {
     Serial.begin(9600);
-    // MATIKAN INTERNAL REF! Gunakan DEFAULT (5V)
     analogReference(DEFAULT); 
     pinMode(SOUND_PIN, INPUT);
 
     lcd.init();
     lcd.backlight();
     lcd.clear();
-    lcd.print(F("MAX4466 Mode"));
+    lcd.print(F("MAX4466 Calib"));
     delay(1000);
     lcd.clear();
 }
