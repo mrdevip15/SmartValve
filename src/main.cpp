@@ -4,11 +4,11 @@
  *  Board  : Arduino Uno / Nano
  *  Sensor : KY-037 (AO), IR RPM (interrupt), Servo, LCD I2C
  * ============================================================
- * 
+ *
  *  LOGIKA TOMBOL (HANYA SOFTWARE FIX):
- *  Karena kabel disolder ke 3.3V (Active HIGH) dan tidak ada resistor 
+ *  Karena kabel disolder ke 3.3V (Active HIGH) dan tidak ada resistor
  *  pull-down eksternal, pin menjadi "FLOATING" (ngaco).
- *  Kodingan ini menggunakan "Confidence Counter" untuk memfilter 
+ *  Kodingan ini menggunakan "Confidence Counter" untuk memfilter
  *  noise listrik agar mode tidak pindah-pindah sendiri.
  */
 
@@ -19,7 +19,7 @@
 
 // ==================== PIN ====================
 #define SERVO_PIN 9
-#define IR_SENSOR_PIN 2 
+#define IR_SENSOR_PIN 2
 #define SOUND_PIN A0
 #define BUTTON_MODE1_PIN 4
 #define BUTTON_MODE2_PIN 5
@@ -27,30 +27,30 @@
 
 // ==================== SERVO ====================
 #define SERVO_OPEN 0
-#define SERVO_CLOSE 90
+#define SERVO_CLOSE 95
 
 // ==================== KALIBRASI dB (MAX4466) ====================
-#define DB_REF          45.0f   // dB saat diam (matching user meter)
-#define P2P_REF         16.0f   // baseline P2P saat diam (calibrated offline)
-#define DB_SCALE        55.0f   // Skala sensitivitas
-#define DB_MIN          30.0f
-#define DB_MAX          120.0f
+#define DB_REF 45.0f   // dB saat diam (matching user meter)
+#define P2P_REF 16.0f  // baseline P2P saat diam (calibrated offline)
+#define DB_SCALE 55.0f // Skala sensitivitas
+#define DB_MIN 30.0f
+#define DB_MAX 120.0f
 
 // ==================== THRESHOLD ====================
-#define SOUND_THRESHOLD_DB 75.0f 
+#define SOUND_THRESHOLD_DB 75.0f
 #define RPM_THRESHOLD 4000
 
 // ==================== TIMING ====================
-#define RPM_CALC_INTERVAL 1000UL 
-#define RPM_TIMEOUT_MS 10000UL   
-#define LCD_INTERVAL 500UL       
-#define MODE1_CLOSE_HOLD 1000UL  
-#define CYCLE_DURATION 60000UL 
-#define DEBOUNCE_DELAY 150UL   
+#define RPM_CALC_INTERVAL 1000UL
+#define RPM_TIMEOUT_MS 10000UL
+#define LCD_INTERVAL 500UL
+#define MODE1_CLOSE_HOLD 1000UL
+#define CYCLE_DURATION 60000UL
+#define DEBOUNCE_DELAY 150UL
 
 // ==================== SOUND SAMPLING ====================
-#define SOUND_WINDOW_MS 150UL 
-#define P2P_AVG_COUNT 4 
+#define SOUND_WINDOW_MS 150UL
+#define P2P_AVG_COUNT 4
 
 // ==================== OBJEK ====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -101,35 +101,43 @@ void countPulse() { pulseCount++; }
 
 void sampleSound() {
   uint16_t s = analogRead(SOUND_PIN);
-  if (s > soundMax) soundMax = s;
-  if (s < soundMin) soundMin = s;
+  if (s > soundMax)
+    soundMax = s;
+  if (s < soundMin)
+    soundMin = s;
 
   unsigned long now = millis();
-  if (now - soundWindowStart < SOUND_WINDOW_MS) return;
+  if (now - soundWindowStart < SOUND_WINDOW_MS)
+    return;
   soundWindowStart = now;
 
   uint16_t p2p = (soundMax >= soundMin) ? (soundMax - soundMin) : 0;
-  soundMax = 0; soundMin = 1023;
+  soundMax = 0;
+  soundMin = 1023;
 
   p2pBuf[p2pIdx] = p2p;
   p2pIdx = (p2pIdx + 1) % P2P_AVG_COUNT;
 
   uint32_t sum = 0;
-  for (uint8_t i = 0; i < P2P_AVG_COUNT; i++) sum += p2pBuf[i];
+  for (uint8_t i = 0; i < P2P_AVG_COUNT; i++)
+    sum += p2pBuf[i];
   uint16_t p2pAvg = (uint16_t)(sum / P2P_AVG_COUNT);
   lastPeakToPeak = p2pAvg;
 
   float pp = (p2pAvg < 1) ? 1.0f : (float)p2pAvg;
   float db = DB_REF + DB_SCALE * log10f(pp / P2P_REF);
 
-  if (db < DB_MIN) db = DB_MIN;
-  if (db > DB_MAX) db = DB_MAX;
+  if (db < DB_MIN)
+    db = DB_MIN;
+  if (db > DB_MAX)
+    db = DB_MAX;
   currentDB = db;
 }
 
 void calculateRPM() {
   unsigned long now = millis();
-  if (now - lastRPMCalcTime < RPM_CALC_INTERVAL) return;
+  if (now - lastRPMCalcTime < RPM_CALC_INTERVAL)
+    return;
   noInterrupts();
   uint16_t pulses = pulseCount;
   pulseCount = 0;
@@ -158,7 +166,8 @@ void processMode() {
   unsigned long now = millis();
   if (currentMode != MODE_IDLE) {
     if (currentRPM == 0) {
-      if (rpmZeroStart == 0) rpmZeroStart = now;
+      if (rpmZeroStart == 0)
+        rpmZeroStart = now;
       else if (now - rpmZeroStart > RPM_TIMEOUT_MS) {
         currentMode = MODE_IDLE;
         mode1HoldActive = false;
@@ -166,42 +175,75 @@ void processMode() {
         resetCycle();
         return;
       }
-    } else { rpmZeroStart = 0; }
+    } else {
+      rpmZeroStart = 0;
+    }
   }
 
   bool soundTrigger = (currentDB > SOUND_THRESHOLD_DB);
   bool rpmTrigger = (currentRPM > RPM_THRESHOLD);
 
   switch (currentMode) {
-    case MODE_IDLE:
-      isCycleActive = false;
-      if (soundTrigger) {
-        if (!mode1HoldActive) { servoClose(); mode1HoldActive = true; }
-        mode1CloseStart = now;
-      } else {
-        if (mode1HoldActive) {
-          if (now - mode1CloseStart >= MODE1_CLOSE_HOLD) { servoOpen(); mode1HoldActive = false; }
-        } else { servoOpen(); }
+  case MODE_IDLE:
+    isCycleActive = false;
+    if (soundTrigger) {
+      if (!mode1HoldActive) {
+        servoClose();
+        mode1HoldActive = true;
       }
-      break;
+      mode1CloseStart = now;
+    } else {
+      if (mode1HoldActive) {
+        if (now - mode1CloseStart >= MODE1_CLOSE_HOLD) {
+          servoOpen();
+          mode1HoldActive = false;
+        }
+      } else {
+        servoOpen();
+      }
+    }
+    break;
 
-    case MODE_NORMAL:
-      if (soundTrigger && rpmTrigger) {
-        if (!isCycleActive) { isCycleActive = true; isClosingPhase = true; cycleStartTime = now; servoClose(); }
-      } else { if (isCycleActive) resetCycle(); else servoOpen(); }
-      break;
+  case MODE_NORMAL:
+    if (soundTrigger && rpmTrigger) {
+      if (!isCycleActive) {
+        isCycleActive = true;
+        isClosingPhase = true;
+        cycleStartTime = now;
+        servoClose();
+      }
+    } else {
+      if (isCycleActive)
+        resetCycle();
+      else
+        servoOpen();
+    }
+    break;
 
-    case MODE_BURU:
-      if (!rpmTrigger) {
-        if (!isCycleActive) { isCycleActive = true; isClosingPhase = true; cycleStartTime = now; servoClose(); }
-      } else { if (isCycleActive) resetCycle(); else servoOpen(); }
-      break;
+  case MODE_BURU:
+    if (!rpmTrigger) {
+      if (!isCycleActive) {
+        isCycleActive = true;
+        isClosingPhase = true;
+        cycleStartTime = now;
+        servoClose();
+      }
+    } else {
+      if (isCycleActive)
+        resetCycle();
+      else
+        servoOpen();
+    }
+    break;
   }
 
   if (isCycleActive && (now - cycleStartTime >= CYCLE_DURATION)) {
     isClosingPhase = !isClosingPhase;
     cycleStartTime = now;
-    if (isClosingPhase) servoClose(); else servoOpen();
+    if (isClosingPhase)
+      servoClose();
+    else
+      servoOpen();
   }
 }
 
@@ -213,26 +255,33 @@ void checkButtons() {
     bool reading = digitalRead(buttons[i].pin);
 
     if (reading == HIGH) {
-      if (buttons[i].confidence < 15) buttons[i].confidence++;
+      if (buttons[i].confidence < 15)
+        buttons[i].confidence++;
     } else {
-      if (buttons[i].confidence > 0) buttons[i].confidence--;
+      if (buttons[i].confidence > 0)
+        buttons[i].confidence--;
     }
 
     bool currentState = buttons[i].stableState;
-    if (buttons[i].confidence > 12) currentState = HIGH;
-    else if (buttons[i].confidence < 3) currentState = LOW;
+    if (buttons[i].confidence > 12)
+      currentState = HIGH;
+    else if (buttons[i].confidence < 3)
+      currentState = LOW;
 
     if (currentState != buttons[i].stableState) {
       buttons[i].stableState = currentState;
-      
+
       if (currentState == HIGH && !buttons[i].actionTaken) {
         buttons[i].actionTaken = true;
         currentMode = (SystemMode)(i + 1);
         mode1HoldActive = false;
         rpmZeroStart = 0;
         resetCycle();
-        for (uint8_t j = 0; j < 3; j++) if (j != i) buttons[j].confidence = 0;
-        Serial.print(F("Mode changed to: ")); Serial.println(currentMode);
+        for (uint8_t j = 0; j < 3; j++)
+          if (j != i)
+            buttons[j].confidence = 0;
+        Serial.print(F("Mode changed to: "));
+        Serial.println(currentMode);
       }
     }
 
@@ -244,11 +293,12 @@ void checkButtons() {
 
 void updateLCD() {
   unsigned long now = millis();
-  if (now - lastLCDUpdate < LCD_INTERVAL) return;
+  if (now - lastLCDUpdate < LCD_INTERVAL)
+    return;
   lastLCDUpdate = now;
 
   lcd.setCursor(0, 0);
-  const char* modeNames[] = {"IDLE", "NORM", "BURU"};
+  const char *modeNames[] = {"IDLE", "NORM", "BURU"};
   lcd.print(modeNames[currentMode - 1]);
   lcd.print(" RPM:");
   lcd.print(currentRPM);
@@ -259,7 +309,8 @@ void updateLCD() {
   dtostrf(currentDB, 4, 1, dbBuf);
   char lcdLine1[17];
   bool isClosed = (servoPos == SERVO_CLOSE);
-  snprintf(lcdLine1, sizeof(lcdLine1), "%sdB %s", dbBuf, isClosed ? "[CLOSE]" : "[OPEN ]");
+  snprintf(lcdLine1, sizeof(lcdLine1), "%sdB %s", dbBuf,
+           isClosed ? "[CLOSE]" : "[OPEN ]");
   lcd.print(lcdLine1);
 }
 
