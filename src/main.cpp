@@ -30,9 +30,9 @@
 #define SERVO_CLOSE 95
 
 // ==================== KALIBRASI dB (MAX4466) ====================
-#define DB_REF 45.0f   // dB saat diam (matching user meter)
+#define DB_REF 36.5f   // dB saat diam (matching user meter)
 #define P2P_REF 16.0f  // baseline P2P saat diam (calibrated offline)
-#define DB_SCALE 55.0f // Skala sensitivitas
+#define DB_SCALE 47.0f // Skala sensitivitas
 #define DB_MIN 30.0f
 #define DB_MAX 120.0f
 
@@ -258,8 +258,8 @@ void checkButtons() {
     if (currentState != buttons[i].stableState) {
       buttons[i].stableState = currentState;
 
-      if (currentState == HIGH && !buttons[i].actionTaken
-          && (millis() - lastModeChange) > 800UL) {
+      if (currentState == HIGH && !buttons[i].actionTaken &&
+          (millis() - lastModeChange) > 800UL) {
         buttons[i].actionTaken = true;
         lastModeChange = millis();
         currentMode = (SystemMode)(i + 1);
@@ -278,6 +278,38 @@ void checkButtons() {
       buttons[i].actionTaken = false;
     }
   }
+}
+
+unsigned long lastSerialDebug = 0;
+#define SERIAL_DEBUG_INTERVAL 500UL
+
+void printDebug() {
+  unsigned long now = millis();
+  if (now - lastSerialDebug < SERIAL_DEBUG_INTERVAL)
+    return;
+  lastSerialDebug = now;
+
+  const char *modeNames[] = {"IDLE", "NORM", "BURU"};
+  bool isClosed = (servoPos == SERVO_CLOSE);
+
+  Serial.print(F("MODE:"));
+  Serial.print(modeNames[currentMode - 1]);
+  Serial.print(F(" | RPM:"));
+  Serial.print(currentRPM);
+  Serial.print(F(" | dB:"));
+  Serial.print(currentDB, 1);
+  Serial.print(F(" | P2P:"));
+  Serial.print(lastPeakToPeak);
+  Serial.print(F(" | SERVO:"));
+  Serial.print(isClosed ? F("CLOSE") : F("OPEN "));
+  Serial.print(F(" | CYCLE:"));
+  Serial.print(isCycleActive ? F("ON ") : F("OFF"));
+  Serial.print(F(" | BTN_CONF:"));
+  Serial.print(buttons[0].confidence);
+  Serial.print(F("/"));
+  Serial.print(buttons[1].confidence);
+  Serial.print(F("/"));
+  Serial.println(buttons[2].confidence);
 }
 
 void updateLCD() {
@@ -338,4 +370,5 @@ void loop() {
   calculateRPM();
   processMode();
   updateLCD();
+  printDebug();
 }
