@@ -1,14 +1,9 @@
 /**
- * SOUND SENSOR TEST - KY-037 AO
- * Pin  : A0 (analog output)
- * LCD  : I2C 0x27 16x2
- *
- * Method: peak-to-peak per window (same as main.cpp)
- *
- * Row 0: "P2P:1023 R:0512"   peak-to-peak + raw ADC
- * Row 1: "dB: 075.3 THR:75"  estimated dB + threshold marker
- *
- * Serial @ 9600 → "RAW\tP2P\tdB"
+ * SOUND SENSOR DEBUG - MAX4466 VERSION
+ * Pin  : A0
+ * Power: Hubungkan ke 3.3V (BUKAN 5V) untuk noise lebih rendah
+ * 
+ * Note: MAX4466 tidak pakai baut kuning, titik tengah otomatis VCC/2
  */
 
 #include <LiquidCrystal_I2C.h>
@@ -16,46 +11,41 @@
 
 #define SOUND_PIN       A0
 
-// Calibration — INTERNAL ref (1.1V), two-point empirical:
-//   P2P_REF (silence)  → DB_REF
-//   hard blow          → ~114 dB
-//
-// Dengan INTERNAL ref, P2P values ~4.5x lebih besar dari 5V ref
-// karena resolusi ADC lebih halus (1.1V/1023 = 1.07mV per step)
-// Sinyal >1.1V akan clip di 1023 — normal, blow keras tetap terdeteksi
-//
-// !! SETELAH UPLOAD: lihat Serial, catat P2P saat diam → update P2P_REF
-//                    lalu tiup → catat P2P → hitung DB_SCALE baru
-// DB_SCALE = (114 - DB_REF) / log10(P2P_blow / P2P_REF)
-#define DB_REF          35.0f   // dB at silence
-#define P2P_REF         43.0f   // baseline P2P saat diam (measured on hardware)
-#define DB_SCALE        47.0f   // estimasi untuk 1.1V ref — UPDATE setelah cal
+// Kalibrasi untuk MAX4466 (Default Ref 5V)
+// Silence dB: 47.4, Peak dB: 114.0
+// Dengan 3.3V power, titik tengah R adalah sekitar 338 ( (3.3/2)/5 * 1023 )
+#define DB_REF          47.4f   
+#define P2P_REF         5.0f    // P2P MAX4466 saat diam biasanya kecil
+#define DB_SCALE        40.0f   // Disesuaikan untuk sensitivitas MAX4466
 #define DB_MIN          30.0f
 #define DB_MAX          120.0f
-#define SOUND_THRESHOLD_DB 75.0f
 
-#define SOUND_WINDOW_MS 150UL   // naik dari 50 → tangkap lebih banyak amplitudo
-#define P2P_AVG_COUNT   16      // naik dari 8 → smoothing lebih baik
-#define LCD_INTERVAL    200UL
+#define SOUND_WINDOW_MS 150UL   
+#define P2P_AVG_COUNT   16      
+#define LCD_INTERVAL    250UL
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 uint16_t soundMax = 0;
 uint16_t soundMin = 1023;
+uint16_t dispMax = 0;
+uint16_t dispMin = 0;
 unsigned long soundWindowStart = 0;
 uint16_t p2pBuf[P2P_AVG_COUNT] = {0};
 uint8_t p2pIdx = 0;
 uint16_t lastP2P = 0;
 float currentDB = 0.0f;
-uint16_t lastRaw = 0;
 
 void sampleSound() {
-    lastRaw = analogRead(SOUND_PIN);
-    if (lastRaw > soundMax) soundMax = lastRaw;
-    if (lastRaw < soundMin) soundMin = lastRaw;
+    uint16_t raw = analogRead(SOUND_PIN);
+    if (raw > soundMax) soundMax = raw;
+    if (raw < soundMin) soundMin = raw;
 
     unsigned long now = millis();
     if (now - soundWindowStart < SOUND_WINDOW_MS) return;
+    
+    dispMax = soundMax;
+    dispMin = soundMin;
     soundWindowStart = now;
 
     uint16_t p2p = (soundMax >= soundMin) ? (soundMax - soundMin) : 0;
@@ -70,6 +60,7 @@ void sampleSound() {
     lastP2P = (uint16_t)(sum / P2P_AVG_COUNT);
 
     float pp = (lastP2P < 1) ? 1.0f : (float)lastP2P;
+    // Rumus dB sederhana untuk testing
     float db = DB_REF + DB_SCALE * log10f(pp / P2P_REF);
     if (db < DB_MIN) db = DB_MIN;
     if (db > DB_MAX) db = DB_MAX;
@@ -78,18 +69,14 @@ void sampleSound() {
 
 void setup() {
     Serial.begin(9600);
-    Serial.println(F("=== SOUND SENSOR TEST ==="));
-    Serial.println(F("RAW\tP2P\tdB"));
-
-    analogReference(INTERNAL);  // 1.1V ref — resolusi 5x lebih halus
+    // MATIKAN INTERNAL REF! Gunakan DEFAULT (5V)
+    analogReference(DEFAULT); 
     pinMode(SOUND_PIN, INPUT);
-    delay(10);  // beri waktu ADC settle setelah ganti referensi
 
     lcd.init();
     lcd.backlight();
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(F("Sound Test...   "));
+    lcd.print(F("MAX4466 Mode"));
     delay(1000);
     lcd.clear();
 }
@@ -98,30 +85,26 @@ void loop() {
     sampleSound();
 
     static unsigned long lastUpdate = 0;
-    unsigned long now = millis();
-    if (now - lastUpdate >= LCD_INTERVAL) {
-        lastUpdate = now;
+    if (millis() - lastUpdate >= LCD_INTERVAL) {
+        lastUpdate = millis();
 
-        // Row 0: "P2P:1023 R:0512"
+        // Tampilkan Min/Max Raw
         lcd.setCursor(0, 0);
         char row0[17];
-        snprintf(row0, sizeof(row0), "P2P:%04u R:%04u", lastP2P, lastRaw);
+        snprintf(row0, sizeof(row0), "Mi:%04u Ma:%04u", dispMin, dispMax);
         lcd.print(row0);
 
-        // Row 1: "dB:075.3 [LOUD]" or "dB:075.3 [    ]"
+        // Tampilkan P2P & dB
         lcd.setCursor(0, 1);
-        uint8_t dbInt = (uint8_t)currentDB;
-        uint8_t dbDec = (uint8_t)((currentDB - dbInt) * 10);
+        char dbBuf[6];
+        dtostrf(currentDB, 4, 1, dbBuf);
         char row1[17];
-        bool loud = currentDB >= SOUND_THRESHOLD_DB;
-        snprintf(row1, sizeof(row1), "dB:%03u.%u %s", dbInt, dbDec, loud ? "[LOUD]" : "[    ]");
+        snprintf(row1, sizeof(row1), "P2P:%04u dB:%s", lastP2P, dbBuf);
         lcd.print(row1);
 
-        // Serial log
-        Serial.print(lastRaw);
-        Serial.print(F("\t"));
-        Serial.print(lastP2P);
-        Serial.print(F("\t"));
+        Serial.print(dispMin); Serial.print("\t");
+        Serial.print(dispMax); Serial.print("\t");
+        Serial.print(lastP2P); Serial.print("\t");
         Serial.println(currentDB, 1);
     }
 }
