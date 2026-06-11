@@ -1,176 +1,66 @@
-# Panduan Kalibrasi Sensor Suara KY-037
+# Panduan Kalibrasi Sensor
 
-## Alat yang Dibutuhkan
+## Bagian A — Kalibrasi Sensor Suara KY-037
 
-| Alat | Keterangan |
-|------|-----------|
-| HP A | Instal app **Tone Generator** (Play Store / App Store) |
-| HP B | Instal app **Sound Meter** (Play Store / App Store) |
-| Arduino Uno | Sudah upload code terbaru, nyala pakai adaptor |
-| Obeng kecil (+) | Untuk putar potensiometer di sensor KY-037 (jika perlu) |
+### 1. Kalibrasi Fisik (Gain Potentiometer)
+Putar potensiometer biru pada sensor:
+- Putar **searah jarum jam (CW)** → Sensitivitas **turun**.
+- Putar **berlawanan jam (CCW)** → Sensitivitas **naik**.
 
----
+**Target:**
+- Saat sunyi: P2P di LCD sekitar 20-80.
+- Saat suara keras target: P2P di LCD sekitar 400-700.
 
-## Bagian A — Kalibrasi Fisik Sensor KY-037
-
-KY-037 punya dua output:
-- **DO** (Digital Out) → hanya HIGH/LOW, tidak dipakai di sistem ini
-- **AO** (Analog Out) → tegangan proporsional dengan suara, **ini yang dipakai**
-
-### Komponen di board KY-037
-
-```
-┌─────────────────────────┐
-│  [LED power]            │
-│  [LED sinyal DO]        │
-│                         │
-│   ┌──────────┐          │
-│   │ Mic      │          │
-│   └──────────┘          │
-│                         │
-│   [Potensiometer] ←─── ini yang diputar untuk kalibrasi sensitifitas
-│                         │
-│  AO  DO  GND  VCC       │
-└─────────────────────────┘
-```
-
-### Cara atur potensiometer
-
-Potensiometer = sekrup kecil di tengah board. Fungsinya: atur **gain / sensitifitas** mikrofon.
-
-- Putar **searah jarum jam (CW)** → sensitifitas **turun** → P2P lebih kecil
-- Putar **berlawanan jarum jam (CCW)** → sensitifitas **naik** → P2P lebih besar
-
-### Kapan perlu putar potensiometer?
-
-| Kondisi | Tindakan |
-|---------|----------|
-| P2P saat sunyi sudah >200 (terlalu sensitif) | Putar CW sedikit |
-| P2P saat noise keras <100 (kurang sensitif) | Putar CCW sedikit |
-| P2P saat noise keras >900 (hampir saturasi) | Putar CW sedikit |
-| P2P saat noise keras 300–700 (ideal) | Tidak perlu diubah |
-
-**Target P2P saat sunyi:** 20–80  
-**Target P2P saat noise referensi:** 300–700
-
----
-
-## Bagian B — Kalibrasi Software (DB_REF & V_REF)
-
-### Step 1 — Posisi alat
-
-```
-         5–10 cm          5–10 cm
-HP A ◄──────────► KY-037 ◄──────────► HP B
-(noise)           (sensor)           (sound meter)
-```
-
-- HP A dan HP B sejajar dengan sensor
-- Semua di posisi tetap, jangan dipegang saat baca nilai
-
----
-
-### Step 2 — Putar noise
-
-1. Buka app **Tone Generator** di HP A
-2. Pilih **Sine Wave, frekuensi 1000 Hz**
-3. Naikkan volume HP A perlahan
-4. Lihat HP B (Sound Meter) sampai angka stabil di nilai yang kamu inginkan  
-   Rekomendasi: **70–80 dB** (lebih mudah dicapai dari 90 dB)
-5. **Jangan geser posisi apapun setelah ini**
-
----
-
-### Step 3 — Catat nilai P2P dari LCD
-
-1. Lihat LCD Arduino baris bawah → tampil `P2P:XXX`
-2. Tunggu **10 detik** sampai angka relatif stabil
-3. Catat nilai tengah-tengahnya (bukan nilai tertinggi/terendah)
-
-Contoh: LCD menampilkan `P2P:480`
-
----
-
-### Step 4 — Hitung V_REF
-
-```
-V_REF = (nilai_P2P ÷ 1023) × 5.0
-```
-
-**Contoh:**
-```
-V_REF = (480 ÷ 1023) × 5.0 = 2.35
-```
-
-Gunakan kalkulator HP untuk hasil akurat.
-
----
-
-### Step 5 — Update code
-
-Buka file `src/main.cpp`, cari bagian ini (sekitar baris 48):
-
+### 2. Kalibrasi Software (main.cpp)
+Update nilai berikut setelah testing:
 ```cpp
-#define DB_REF 60.0f
-#define V_REF  2.5f
-```
-
-Ganti dengan nilai hasil kalibrasi:
-
-```cpp
-#define DB_REF 75.0f   // ← isi dB yang terbaca di HP B (Sound Meter)
-#define V_REF  2.35f   // ← hasil hitungan Step 4
+#define DB_REF 36.5f   // Ganti dengan angka dB dari Sound Meter HP saat sunyi
+#define P2P_REF 16.0f  // Ganti dengan angka P2P di LCD saat sunyi
 ```
 
 ---
 
-### Step 6 — Upload & verifikasi
+## Bagian B — Kalibrasi Sensor RPM (FC-03 Speed Sensor)
 
-1. Upload ulang code ke Arduino
-2. Nyalakan pakai adaptor
-3. Cek hasil:
+Sensor ini bekerja dengan mendeteksi hambatan (slot) pada piringan encoder yang berputar.
 
-| Kondisi | Pembacaan LCD Diharapkan |
-|---------|--------------------------|
-| Ruangan sunyi | 30–50 dB |
-| Percakapan normal (60 dB) | 55–65 dB |
-| Noise referensi (misal 75 dB) | 70–80 dB |
-| Suara keras (85+ dB) | 80–90 dB |
+### Step 1 — Cek Fisik & Alignment
+1.  Pastikan piringan encoder masuk tepat di tengah celah sensor FC-03.
+2.  Putar mesin/shaft secara manual dan sangat pelan.
+3.  Lihat LCD atau Serial Monitor bagian **IR**:
+    *   **IR:H** (HIGH) → Saat sensor berada di lubang/celah piringan.
+    *   **IR:L** (LOW) → Saat sensor terhalang bodi piringan.
+4.  Jika status tidak berubah (stuck di H atau L), geser posisi sensor agar lebih presisi.
 
-Toleransi wajar: **±5 dB**
+### Step 2 — Menentukan Nilai PPR (Pulses Per Revolution)
+PPR adalah jumlah pulsa yang dihasilkan dalam 1 putaran penuh.
+1.  Hitung jumlah lubang/celah pada piringan encoder Anda.
+    *   Jika pakai piringan bawaan FC-03 biasanya **20 lubang** (PPR = 20).
+    *   Jika hanya pakai satu baling-baling/baut (PPR = 1).
+2.  Update nilai ini di `src/main.cpp` pada baris:
+    ```cpp
+    #define RPM_PPR 20  // Ganti sesuai jumlah lubang piringan Anda
+    ```
 
----
+### Step 3 — Verifikasi Akurasi
+1.  Putar shaft tepat **1 putaran penuh** menggunakan tangan.
+2.  Lihat nilai **P** (Pulses) pada LCD:
+    *   Jika piringan 20 lubang, nilai **P** harus menunjukkan angka **20**.
+    *   Jika nilai **P** melompat jauh (misal jadi 40-50), berarti ada **noise listrik**. Pastikan kabel sensor jauh dari kabel koil/busi.
 
-### Step 7 — Ulangi jika masih meleset
-
-Jika hasil meleset >10 dB dari ekspektasi:
-
-1. Pastikan posisi HP dan sensor sama persis seperti Step 1
-2. Ulangi Step 2–4 dengan P2P yang lebih akurat
-3. Jika P2P saat noise masih kecil (<150) → putar potensiometer CCW lalu ulangi
-
----
-
-## Setelah Kalibrasi Selesai
-
-Hapus tampilan P2P dari LCD (opsional, untuk tampilan lebih rapi):
-
-Buka `src/main.cpp`, cari bagian `updateLCD()`, ganti baris:
-```cpp
-snprintf(lcdLine1, sizeof(lcdLine1), "P2P:%-4u %sdB", lastPeakToPeak, dbBuf);
-```
-Menjadi:
-```cpp
-snprintf(lcdLine1, sizeof(lcdLine1), "%sdB%s", dbBuf, closed ? " CLOSE" : " OPEN ");
-```
-
-Upload ulang.
+### Step 4 — Menentukan Threshold Trigger
+1.  Nyalakan mesin.
+2.  Cari kecepatan (RPM) di mana Anda ingin katup mulai bekerja (menutup).
+3.  Lihat angka **RPM** yang muncul di LCD.
+4.  Update nilai threshold di `src/main.cpp`:
+    ```cpp
+    #define RPM_THRESHOLD 4000 // Ganti dengan RPM target Anda
+    ```
 
 ---
 
-## Catatan Penting
-
-- KY-037 **tidak punya kalibrasi factory** — akurasi ±5 dB sudah sangat baik untuk sensor ini
-- Jauhkan sensor dari sumber getaran mekanik (fan, motor) saat kalibrasi
-- Kalibrasi ulang jika sensor dipindah lokasi atau gain potensiometer diubah
-- Threshold sistem saat ini: **75 dB** → servo menutup katup (bisa diubah di `#define SOUND_THRESHOLD_DB`)
+## Tips Anti-Noise (Penting untuk RPM)
+Jika RPM melompat-lompat tidak masuk akal saat mesin nyala:
+1.  Gunakan kabel **Shielded** (kabel isi 3 yang dibungkus ground) untuk sensor RPM.
+2.  Pasang kapasitor **0.1uF (kode 104)** antara pin GND dan pin Signal di sensor untuk memfilter percikan api busi.
+3.  Pastikan Arduino mendapatkan power yang stabil (lewat step-down, jangan langsung dari aki tanpa filter).

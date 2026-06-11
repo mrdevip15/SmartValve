@@ -39,6 +39,7 @@
 // ==================== THRESHOLD ====================
 #define SOUND_THRESHOLD_DB 75.0f
 #define RPM_THRESHOLD 4000
+#define RPM_PPR 1 // Pulses Per Revolution (Ganti jika pakai piringan berlubang banyak)
 
 // ==================== TIMING ====================
 #define RPM_CALC_INTERVAL 1000UL
@@ -57,13 +58,17 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 Servo katupServo;
 
 enum SystemMode : uint8_t { MODE_IDLE = 1, MODE_NORMAL = 2, MODE_BURU = 3 };
-
 // ==================== STATE GLOBAL ====================
 volatile uint16_t pulseCount = 0;
+volatile unsigned long lastPulseTime = 0; // Untuk debouncing
+#define RPM_DEBOUNCE_MS 2 // Abaikan pulsa jika jarak < 2ms
+
+uint16_t lastPulses = 0; // Simpan jumlah pulsa terakhir untuk debug
 unsigned long lastRPMCalcTime = 0;
 uint16_t currentRPM = 0;
 
 float currentDB = 0.0f;
+// ... (rest of state)
 uint16_t lastPeakToPeak = 0;
 uint16_t soundMax = 0;
 uint16_t soundMin = 1023;
@@ -72,7 +77,15 @@ uint16_t p2pBuf[P2P_AVG_COUNT] = {0};
 uint8_t p2pIdx = 0;
 
 SystemMode currentMode = MODE_IDLE;
-unsigned long lastModeChange = 0;
+// ... (rest of countPulse)
+void countPulse() {
+  unsigned long now = millis();
+  if (now - lastPulseTime > RPM_DEBOUNCE_MS) {
+    pulseCount++;
+    lastPulseTime = now;
+  }
+}
+
 unsigned long cycleStartTime = 0;
 bool isCycleActive = false;
 bool isClosingPhase = false;
@@ -143,8 +156,10 @@ void calculateRPM() {
   uint16_t pulses = pulseCount;
   pulseCount = 0;
   interrupts();
+  lastPulses = pulses;
   unsigned long delta = now - lastRPMCalcTime;
-  currentRPM = (pulses > 0) ? (uint16_t)((pulses * 60000UL) / delta) : 0;
+  // RPM = (pulses / PPR) * (60000 / delta_ms)
+  currentRPM = (pulses > 0) ? (uint16_t)(((uint32_t)pulses * 60000UL) / (delta * RPM_PPR)) : 0;
   lastRPMCalcTime = now;
 }
 
@@ -291,11 +306,17 @@ void printDebug() {
 
   const char *modeNames[] = {"IDLE", "NORM", "BURU"};
   bool isClosed = (servoPos == SERVO_CLOSE);
+  bool irState = digitalRead(IR_SENSOR_PIN);
 
   Serial.print(F("MODE:"));
   Serial.print(modeNames[currentMode - 1]);
   Serial.print(F(" | RPM:"));
   Serial.print(currentRPM);
+  Serial.print(F(" ("));
+  Serial.print(lastPulses);
+  Serial.print(F("p)"));
+  Serial.print(F(" | IR:"));
+  Serial.print(irState ? F("HIGH") : F("LOW "));
   Serial.print(F(" | dB:"));
   Serial.print(currentDB, 1);
   Serial.print(F(" | P2P:"));
@@ -318,21 +339,24 @@ void updateLCD() {
     return;
   lastLCDUpdate = now;
 
+  // Baris 0: "IDLE R:4500 P:75" (16 char)
   lcd.setCursor(0, 0);
   const char *modeNames[] = {"IDLE", "NORM", "BURU"};
-  lcd.print(modeNames[currentMode - 1]);
-  lcd.print(" RPM:");
-  lcd.print(currentRPM);
-  lcd.print("    ");
+  char row0[17];
+  snprintf(row0, sizeof(row0), "%-4s R:%-4u P:%-2u", 
+           modeNames[currentMode - 1], currentRPM, lastPulses);
+  lcd.print(row0);
 
+  // Baris 1: "75.2dB [C] IR:H" (16 char)
   lcd.setCursor(0, 1);
   char dbBuf[6];
   dtostrf(currentDB, 4, 1, dbBuf);
-  char lcdLine1[17];
   bool isClosed = (servoPos == SERVO_CLOSE);
-  snprintf(lcdLine1, sizeof(lcdLine1), "%sdB %s", dbBuf,
-           isClosed ? "[CLOSE]" : "[OPEN ]");
-  lcd.print(lcdLine1);
+  bool irState = digitalRead(IR_SENSOR_PIN);
+  char row1[17];
+  snprintf(row1, sizeof(row1), "%sdB %s IR:%c", 
+           dbBuf, isClosed ? "[C]" : "[O]", irState ? 'H' : 'L');
+  lcd.print(row1);
 }
 
 void setup() {
@@ -355,7 +379,7 @@ void setup() {
   pinMode(BUTTON_MODE2_PIN, INPUT);
   pinMode(BUTTON_MODE3_PIN, INPUT);
 
-  pinMode(IR_SENSOR_PIN, INPUT);
+  pinMode(IR_SENSOR_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(IR_SENSOR_PIN), countPulse, FALLING);
 
   unsigned long t = millis();
