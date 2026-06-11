@@ -1,9 +1,9 @@
 /**
- * RPM SENSOR ADVANCED DEBUG - HIGH NOISE FILTER
+ * RPM DEBUG - MOVING AVERAGE (REAL-TIME FEEL)
  * Pin  : D2 (interrupt INT0)
  * 
- * Update: Menggunakan micros() dan debounce lebih tinggi (10ms)
- * untuk menghilangkan pulsa hantu akibat noise kabel busi.
+ * Update: Update display setiap 100ms menggunakan Moving Average.
+ * Hasil: RPM terasa lebih halus dan responsif.
  */
 
 #include <Arduino.h>
@@ -12,21 +12,24 @@
 #define IR_SENSOR_PIN   2
 #define INDICATOR_LED   13
 #define RPM_PPR         1
-#define CALC_INTERVAL   1000UL
+#define SAMPLE_INTERVAL 100UL   // Ambil sampel setiap 100ms (10x lebih cepat)
+#define AVG_WINDOW      10      // Gunakan 10 sampel terakhir (10 x 100ms = 1 detik total)
 
-// FILTER: Abaikan sinyal liar di bawah 10 milidetik (10000 micros)
-// 10ms = max 6000 RPM (untuk PPR 1). Jika mesin lebih cepat, kecilkan angka ini.
+// Filter Noise (10ms)
 #define RPM_DEBOUNCE_MICROS 10000 
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 volatile uint32_t pulseCount = 0;
 volatile unsigned long lastPulseMicros = 0;
-bool lastIRState = false;
+
+// Buffer untuk Moving Average
+uint16_t sampleBuffer[AVG_WINDOW];
+uint8_t bufferIdx = 0;
+uint32_t runningSum = 0;
 
 void countPulse() {
     unsigned long now = micros();
-    // Filter Noise: Sinyal harus berjarak minimal 10ms
     if (now - lastPulseMicros > RPM_DEBOUNCE_MICROS) {
         pulseCount++;
         digitalWrite(INDICATOR_LED, !digitalRead(INDICATOR_LED));
@@ -36,30 +39,32 @@ void countPulse() {
 
 void setup() {
     Serial.begin(115200);
-    // Gunakan INPUT_PULLUP internal untuk stabilitas ekstra
     pinMode(IR_SENSOR_PIN, INPUT_PULLUP);
     pinMode(INDICATOR_LED, OUTPUT);
-    
     attachInterrupt(digitalPinToInterrupt(IR_SENSOR_PIN), countPulse, FALLING);
     
     lcd.init();
     lcd.backlight();
     lcd.clear();
-    lcd.print(F("Heavy Filtering"));
+    lcd.print(F("Moving Average"));
     
-    Serial.println(F("\n=== RPM DEBUG (HEAVY FILTER) ==="));
-    Serial.print(F("Debounce Time: ")); Serial.print(RPM_DEBOUNCE_MICROS / 1000); Serial.println(F("ms"));
-    Serial.println(F("Jika P masih muncul saat diam, pasang kapasitor 104!"));
-    Serial.println(F("-------------------------------------------------"));
+    // Inisialisasi buffer dengan 0
+    for(int i=0; i<AVG_WINDOW; i++) sampleBuffer[i] = 0;
+
+    Serial.println(F("\n=== RPM REAL-TIME (MOVING AVG) ==="));
+    Serial.println(F("Format: [RPM] | Instant_P | Avg_Sum"));
+    Serial.println(F("----------------------------------"));
 }
 
-unsigned long lastCalc = 0;
+unsigned long lastSampleTime = 0;
 unsigned long seconds = 0;
+bool lastIRState = false;
 
 void loop() {
     unsigned long now = millis();
     bool currentIR = digitalRead(IR_SENSOR_PIN);
 
+    // Cek State Fisik (Instan)
     if (currentIR != lastIRState) {
         lastIRState = currentIR;
         lcd.setCursor(0, 1);
@@ -67,25 +72,39 @@ void loop() {
         lcd.print(currentIR ? F("CLEAR (H)") : F("BLOCK (L)"));
     }
 
-    if (now - lastCalc >= CALC_INTERVAL) {
+    // Hitung Moving Average setiap 100ms
+    if (now - lastSampleTime >= SAMPLE_INTERVAL) {
         noInterrupts();
-        uint32_t pulses = pulseCount;
+        uint16_t pulsesThisSample = pulseCount;
         pulseCount = 0;
         interrupts();
+
+        // Update Moving Average
+        runningSum -= sampleBuffer[bufferIdx];      // Kurangi sampel tertua
+        sampleBuffer[bufferIdx] = pulsesThisSample;  // Masukkan sampel baru
+        runningSum += sampleBuffer[bufferIdx];      // Tambahkan ke total
+        bufferIdx = (bufferIdx + 1) % AVG_WINDOW;   // Geser index
+
+        // Rumus RPM: (Total Pulsa dalam 1 detik) * 60 / PPR
+        // Karena window kita totalnya 1000ms (10 sampel x 100ms), 
+        // runningSum sudah mewakili "pulsa per detik".
+        uint32_t rpm = (runningSum * 60UL) / RPM_PPR;
         
-        unsigned long deltaMs = now - lastCalc;
-        uint32_t rpm = (uint32_t)(((uint32_t)pulses * 60000UL) / (deltaMs * RPM_PPR));
-        lastCalc = now;
-        seconds++;
-        
-        Serial.print(F("[")); if (seconds < 10) Serial.print(F("0")); Serial.print(seconds);
-        Serial.print(F("s] P:")); Serial.print(pulses);
-        Serial.print(F(" | RPM:")); Serial.print(rpm);
-        Serial.print(F(" | STATE:")); Serial.println(currentIR ? F("H") : F("L"));
-        
+        lastSampleTime = now;
+
+        // Log ke Serial setiap 500ms agar tidak memenuhi layar
+        static unsigned long lastSerial = 0;
+        if (now - lastSerial >= 500) {
+            lastSerial = now;
+            Serial.print(F("RPM: ")); Serial.print(rpm);
+            Serial.print(F(" | Sample_P: ")); Serial.print(pulsesThisSample);
+            Serial.print(F(" | Sum_1s: ")); Serial.println(runningSum);
+        }
+
+        // Update LCD (Baris Atas)
         lcd.setCursor(0, 0);
         char row0[17];
-        snprintf(row0, sizeof(row0), "RPM:%-5lu P:%-3lu", rpm, pulses);
+        snprintf(row0, sizeof(row0), "RPM:%-5lu P:%-3u", rpm, pulsesThisSample);
         lcd.print(row0);
     }
 }
