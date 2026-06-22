@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *  SISTEM KONTROL KATUP OTOMATIS  (v2.2 - revisi)
+ *  SISTEM KONTROL KATUP OTOMATIS  (v2.3 - Smooth RPM)
  *  Board  : Arduino Uno / Nano
  *  Sensor : KY-037 (AO), IR RPM (interrupt), Servo, LCD I2C
  * ============================================================
@@ -33,16 +33,17 @@
 // ==================== THRESHOLD ====================
 #define SOUND_THRESHOLD_DB 75.0f
 #define RPM_THRESHOLD 4000
-#define RPM_PPR 1 // Pulses Per Revolution (Ganti jika pakai piringan berlubang banyak)
+#define RPM_PPR 1 // Pulses Per Revolution
 
 // ==================== TIMING ====================
-#define RPM_CALC_INTERVAL 1000UL
+#define SAMPLE_INTERVAL 100UL   // Hitung moving average tiap 100ms
+#define AVG_WINDOW      10      // Window 1 detik (10 x 100ms)
+#define LCD_INTERVAL 300UL      // LCD update lebih cepat biar smooth
 #define RPM_TIMEOUT_MS 10000UL
-#define LCD_INTERVAL 500UL
 #define MODE1_CLOSE_HOLD 1000UL
 #define CYCLE_DURATION 60000UL
 #define DEBOUNCE_DELAY 150UL
-#define RPM_DEBOUNCE_MS 2 // Abaikan pulsa jika jarak < 2ms
+#define RPM_DEBOUNCE_MS 10      // Heavy filter 10ms
 
 // ==================== SOUND SAMPLING ====================
 #define SOUND_WINDOW_MS 150UL
@@ -57,9 +58,14 @@ enum SystemMode : uint8_t { MODE_IDLE = 1, MODE_NORMAL = 2, MODE_BURU = 3 };
 // ==================== STATE GLOBAL ====================
 volatile uint16_t pulseCount = 0;
 volatile unsigned long lastPulseTime = 0;
-uint16_t lastPulses = 0;
+uint16_t lastPulses = 0; // Menampilkan pulsa per 100ms
 unsigned long lastRPMCalcTime = 0;
 uint16_t currentRPM = 0;
+
+// Moving Average Buffer
+uint16_t rpmBuffer[AVG_WINDOW] = {0};
+uint8_t rpmBufIdx = 0;
+uint32_t rpmRunningSum = 0;
 
 float currentDB = 0.0f;
 uint16_t lastPeakToPeak = 0;
@@ -76,24 +82,21 @@ bool isCycleActive = false;
 bool isClosingPhase = false;
 unsigned long mode1CloseStart = 0;
 bool mode1HoldActive = false;
-unsigned long rpmZeroStart = 0;
 unsigned long lastLCDUpdate = 0;
 int servoPos = SERVO_OPEN;
 
-// --- STRUKTUR TOMBOL BARU DENGAN FILTER KUAT ---
+// --- STRUKTUR TOMBOL ---
 struct ButtonState {
   uint8_t pin;
-  bool lastReading;
   bool stableState;
-  unsigned long lastDebounce;
   bool actionTaken;
   int16_t confidence;
 };
 
 ButtonState buttons[3] = {
-    {BUTTON_MODE1_PIN, LOW, LOW, 0, false, 0},
-    {BUTTON_MODE2_PIN, LOW, LOW, 0, false, 0},
-    {BUTTON_MODE3_PIN, LOW, LOW, 0, false, 0},
+    {BUTTON_MODE1_PIN, LOW, false, 0},
+    {BUTTON_MODE2_PIN, LOW, false, 0},
+    {BUTTON_MODE3_PIN, LOW, false, 0},
 };
 
 void countPulse() {
@@ -114,8 +117,7 @@ void sampleSound() {
   soundWindowStart = now;
 
   uint16_t p2p = (soundMax >= soundMin) ? (soundMax - soundMin) : 0;
-  soundMax = 0;
-  soundMin = 1023;
+  soundMax = 0; soundMin = 1023;
 
   p2pBuf[p2pIdx] = p2p;
   p2pIdx = (p2pIdx + 1) % P2P_AVG_COUNT;
@@ -127,7 +129,6 @@ void sampleSound() {
 
   float pp = (p2pAvg < 1) ? 1.0f : (float)p2pAvg;
   float db = DB_REF + DB_SCALE * log10f(pp / P2P_REF);
-
   if (db < DB_MIN) db = DB_MIN;
   if (db > DB_MAX) db = DB_MAX;
   currentDB = db;
@@ -135,15 +136,24 @@ void sampleSound() {
 
 void calculateRPM() {
   unsigned long now = millis();
-  if (now - lastRPMCalcTime < RPM_CALC_INTERVAL) return;
+  if (now - lastRPMCalcTime < SAMPLE_INTERVAL) return;
+
   noInterrupts();
-  uint16_t pulses = pulseCount;
+  uint16_t pulsesThisSample = pulseCount;
   pulseCount = 0;
   interrupts();
-  lastPulses = pulses;
-  unsigned long delta = now - lastRPMCalcTime;
-  currentRPM = (pulses > 0) ? (uint16_t)(((uint32_t)pulses * 60000UL) / (delta * RPM_PPR)) : 0;
+
+  lastPulses = pulsesThisSample;
   lastRPMCalcTime = now;
+
+  // Update Moving Average
+  rpmRunningSum -= rpmBuffer[rpmBufIdx];
+  rpmBuffer[rpmBufIdx] = pulsesThisSample;
+  rpmRunningSum += rpmBuffer[rpmBufIdx];
+  rpmBufIdx = (rpmBufIdx + 1) % AVG_WINDOW;
+
+  // RPM = (Total Pulsa 1 detik * 60) / PPR
+  currentRPM = (uint16_t)((rpmRunningSum * 60UL) / RPM_PPR);
 }
 
 inline void servoWrite(int pos) {
@@ -246,8 +256,7 @@ void checkButtons() {
         mode1HoldActive = false;
         resetCycle();
         for (uint8_t j = 0; j < 3; j++) if (j != i) buttons[j].confidence = 0;
-        Serial.print(F("Mode changed to: "));
-        Serial.println(currentMode);
+        Serial.print(F("Mode: ")); Serial.println(currentMode);
       }
     }
     if (currentState == LOW) buttons[i].actionTaken = false;
@@ -255,29 +264,20 @@ void checkButtons() {
 }
 
 unsigned long lastSerialDebug = 0;
-#define SERIAL_DEBUG_INTERVAL 500UL
-
 void printDebug() {
   unsigned long now = millis();
-  if (now - lastSerialDebug < SERIAL_DEBUG_INTERVAL) return;
+  if (now - lastSerialDebug < 500) return;
   lastSerialDebug = now;
 
   const char *modeNames[] = {"IDLE", "NORM", "BURU"};
   bool isClosed = (servoPos == SERVO_CLOSE);
   bool irState = digitalRead(IR_SENSOR_PIN);
 
-  Serial.print(F("MODE:")); Serial.print(modeNames[currentMode - 1]);
+  Serial.print(F("M:")); Serial.print(modeNames[currentMode - 1]);
   Serial.print(F(" | RPM:")); Serial.print(currentRPM);
-  Serial.print(F(" (")); Serial.print(lastPulses); Serial.print(F("p)"));
-  Serial.print(F(" | IR:")); Serial.print(irState ? F("HIGH") : F("LOW "));
+  Serial.print(F(" | IR:")); Serial.print(irState ? F("H") : F("L"));
   Serial.print(F(" | dB:")); Serial.print(currentDB, 1);
-  Serial.print(F(" | P2P:")); Serial.print(lastPeakToPeak);
-  Serial.print(F(" | SERVO:")); Serial.print(isClosed ? F("CLOSE") : F("OPEN "));
-  Serial.print(F(" | CYCLE:")); Serial.print(isCycleActive ? F("ON ") : F("OFF"));
-  Serial.print(F(" | BTN_CONF:"));
-  Serial.print(buttons[0].confidence); Serial.print(F("/"));
-  Serial.print(buttons[1].confidence); Serial.print(F("/"));
-  Serial.println(buttons[2].confidence);
+  Serial.print(F(" | S:")); Serial.println(isClosed ? F("CLOSE") : F("OPEN"));
 }
 
 void updateLCD() {
@@ -310,9 +310,9 @@ void setup() {
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
-  lcd.print("SmartValve v2.2");
+  lcd.print("SmartValve v2.3");
   lcd.setCursor(0, 1);
-  lcd.print("Calib FC-03");
+  lcd.print("Smooth RPM Mode");
   delay(1500);
   lcd.clear();
 
@@ -320,7 +320,6 @@ void setup() {
   pinMode(BUTTON_MODE1_PIN, INPUT);
   pinMode(BUTTON_MODE2_PIN, INPUT);
   pinMode(BUTTON_MODE3_PIN, INPUT);
-
   pinMode(IR_SENSOR_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(IR_SENSOR_PIN), countPulse, FALLING);
 
